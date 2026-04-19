@@ -13,7 +13,7 @@
 - 当前总阶段：第一阶段
 - 当前 step：`step1`
 - 当前 step 文档：[README_process_supervised_rl.md](/Users/bytedance/Documents/New%20project/README_process_supervised_rl.md)
-- 当前完成度：已跑通远端环境搭建与 `GSM8K` 预处理链路
+- 当前完成度：已跑通远端环境搭建、`GSM8K` 预处理链路、`process reward v0` 代码骨架
 
 ## 当前目标
 
@@ -118,7 +118,8 @@
 - `GSM8K` 数据准备
 - 最终答案标准化
 - 基于规则的步骤切分
-- 后续过程奖励模块的代码位置预留
+- 基于规则的 `process reward v0`
+- 样本级 reward 聚合与打分脚本
 
 ## 当前下一步命令
 
@@ -167,7 +168,26 @@ cat configs/reward/process_reward_v0.yaml
 ```bash
 python scripts/prepare_gsm8k.py --help
 python scripts/build_debug_subset.py --help
+python scripts/score_samples.py --help
 ```
+
+### 6. 当前建议执行的 reward 打分命令
+
+下面这组命令是给远端同学直接跑 `debug subset` 的。默认会输出每条样本的 `final_reward`、`process_reward`、`total_reward` 和组件均值。
+
+```bash
+cd ~/autodl-tmp/process_supervised_rl
+source .venv/bin/activate
+
+python scripts/score_samples.py \
+  --input data/debug/gsm8k_train_debug.jsonl \
+  --output logs/process_reward_v0/gsm8k_train_debug_scored.jsonl \
+  --reward-config configs/reward/process_reward_v0.yaml
+```
+
+如果要先看 `final-only` 基线，把 `configs/reward/process_reward_v0.yaml` 里的 `process_reward_weight` 临时改成 `0.0`，再跑同一条命令即可。
+
+如果要先看 `final + process`，就保留当前配置里的 `process_reward_weight: 0.3`。
 
 ## 数据清洗原则
 
