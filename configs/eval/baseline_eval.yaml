@@ -1,0 +1,7 @@
+eval_name: baseline_eval
+eval_data_path: data/processed/gsm8k_test.jsonl
+report_path: experiments/baseline_eval.json
+metrics:
+  - final_accuracy
+  - mean_step_count
+  - duplicate_step_ratio

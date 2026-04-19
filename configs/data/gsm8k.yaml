@@ -1,0 +1,7 @@
+dataset_name: gsm8k
+raw_train_path: data/raw/gsm8k/train.jsonl
+raw_test_path: data/raw/gsm8k/test.jsonl
+processed_train_path: data/processed/gsm8k_train.jsonl
+processed_test_path: data/processed/gsm8k_test.jsonl
+debug_subset_path: data/debug/gsm8k_train_debug.jsonl
+debug_limit: 100

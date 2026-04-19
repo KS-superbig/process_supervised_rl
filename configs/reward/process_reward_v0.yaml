@@ -1,0 +1,8 @@
+reward_name: process_reward_v0
+final_reward_weight: 1.0
+process_reward_weight: 0.3
+components:
+  step_validity: 1.0
+  step_consistency: 1.0
+  progress_contribution: 1.0
+  anti_hacking_penalty: -0.5

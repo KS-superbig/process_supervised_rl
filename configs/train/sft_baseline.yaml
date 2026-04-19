@@ -1,0 +1,8 @@
+run_name: sft_baseline
+model_name: deepseekmath-7b
+train_data_path: data/processed/gsm8k_train.jsonl
+eval_data_path: data/processed/gsm8k_test.jsonl
+method: reward_weighted_sft
+batch_size: 2
+gradient_accumulation_steps: 8
+learning_rate: 2.0e-5
