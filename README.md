@@ -12,14 +12,15 @@
 
 - 当前总阶段：第一阶段
 - 当前 step：`step2`
-- 当前 step 文档：[README_process_supervised_rl_step2.md](/Users/bytedance/Documents/New%20project/README_process_supervised_rl_step2.md)
-- 当前完成度：`step1` 已完成，已跑通远端环境、`GSM8K` 数据底座、`process reward v0` 与 debug 打分链路
+- 当前 step 文档：[README_process_supervised_rl_step2.md](README_process_supervised_rl_step2.md)
+- 当前完成度：`step2` 已完成第一版候选轨迹 reranking 实验；`process reward v0` 在不降低 final accuracy 的情况下提升了被选候选的过程分
 
 ## 当前目标
 
 - 使用 `GSM8K` 跑通最小实验闭环
-- 对比 `final-only reward` 与 `final + process reward`
+- 对比 `final-only reward` 与 `final + process reward` 的候选轨迹选择效果
 - 默认采用“本地开发，远端执行”的工作流
+- 下一步聚焦人工抽查 changed cases，并修正当前 process reward 对长步骤偏严格的问题
 
 ## 文档分工
 
@@ -61,10 +62,10 @@
 
 当前默认优先顺序：
 
-1. 做 `final-only` 与 `final + process` 的第一版对照
-2. 继续检查 reward 是否稳定、是否存在明显 reward hacking
-3. 输出第一版分析结论
-4. 再决定是否进入训练/筛选实验
+1. 人工抽查 `final+process` 改变 top1 的 changed cases
+2. 检查并修正 `process_reward_v0` 对长步骤偏严格的问题
+3. 基于修正后的 reward 复跑 `100×4` reranking
+4. 再决定是否进入小规模训练或 reward-weighted SFT
 
 ## 当前已完成
 
@@ -76,8 +77,12 @@
 - `GSM8K` 测试集预处理完成，共生成 `1319` 条样本
 - `debug` 子集生成完成，共生成 `100` 条样本
 - 统一输出 schema 已经验证可用
-- `pytest tests -v` 已通过，当前共 `14` 个测试全部通过
+- `pytest tests -v` 已通过，当前共 `21` 个测试全部通过
 - `process reward v0` 已在 `debug subset` 上完成首轮打分检查
+- 远端已下载并验证 `DeepSeekMath-7B-Instruct` 本地模型：`/root/autodl-tmp/models/deepseek-math-7b-instruct`
+- 已生成 `100` 道 debug 题、每题 `4` 条候选，共 `400` 条模型候选轨迹
+- 已完成 `final-only` vs `final+process` 候选 reranking 分析：两者 top1 final accuracy 都是 `0.9300`，但 `final+process` 选中候选的平均 process reward 从 `0.6681` 提升到 `0.6978`
+- `final+process` 改变了 `50/100` 道题的 top1 选择，其中 `46` 个是 `1->1`，`4` 个是 `0->0`，没有 `1->0` 的准确率伤害
 
 这说明当前工程已经具备：
 
@@ -123,88 +128,70 @@
 
 ## 当前代码范围
 
-第一版只包含：
+第一版包含：
 
 - `GSM8K` 数据准备
 - 最终答案标准化
 - 基于规则的步骤切分
 - 基于规则的 `process reward v0`
 - 样本级 reward 聚合与打分脚本
+- 候选轨迹生成脚本
+- 候选轨迹 reranking 分析脚本
 
 ## 当前下一步命令
 
-下面这组命令对应的是当前 `step2` 阶段的建议执行内容。
+下面这组命令对应的是当前 `step2` 后续复现实验和分析。
 
-### 1. 进入仓库
+### 1. 进入远端仓库
 
 ```bash
 cd ~/autodl-tmp/process_supervised_rl
 git checkout main
 ```
 
-### 2. 先确认当前数据底座和打分产物存在
+### 2. 确认模型、数据和测试
 
 ```bash
-ls data/processed
-ls data/debug
-head -n 2 data/debug/gsm8k_train_debug.jsonl
-ls logs/process_reward_v0
+ls /root/autodl-tmp/models/deepseek-math-7b-instruct
+ls data/debug/gsm8k_train_debug.jsonl
 pytest tests -v
 ```
 
-### 3. 当前开发目标
-
-当前不是继续搭环境，而是开始做 `step2` 的第一版对照实验准备。
-
-建议先围绕这些目录开始：
+### 3. 复跑 `100×4` 候选生成
 
 ```bash
-ls src/psrl
-ls src/psrl/data
-cat configs/reward/process_reward_v0.yaml
-head -n 5 logs/process_reward_v0/gsm8k_train_debug_scored.jsonl
-```
-
-### 4. 当前建议开发顺序
-
-```text
-先检查已有 debug scored 日志
--> 再跑 final-only 基线
--> 再跑 final + process 对照
--> 再整理第一版分析结论
-```
-
-### 5. 当前阶段建议的调试命令
-
-```bash
-python scripts/prepare_gsm8k.py --help
-python scripts/build_debug_subset.py --help
-python scripts/score_samples.py --help
-```
-
-### 6. 当前建议执行的 reward 对照命令
-
-下面这组命令是给远端同学直接做第一版 `final-only` 与 `final + process` 对照的。
-
-```bash
-cd ~/autodl-tmp/process_supervised_rl
-
-python scripts/score_samples.py \
+python scripts/generate_candidates.py \
   --input data/debug/gsm8k_train_debug.jsonl \
-  --output logs/process_reward_v0/gsm8k_train_debug_final_only.jsonl \
+  --output logs/candidates/gsm8k_train_debug_candidates.jsonl \
+  --model-name /root/autodl-tmp/models/deepseek-math-7b-instruct \
+  --limit 100 \
+  --num-candidates 4 \
+  --temperature 0.7 \
+  --top-p 0.95 \
+  --max-new-tokens 512
+```
+
+### 4. 复跑候选 reranking 分析
+
+```bash
+python scripts/analyze_candidate_selection.py \
+  --input logs/candidates/gsm8k_train_debug_candidates.jsonl \
+  --scored-output logs/candidate_reward/gsm8k_train_debug_candidates_scored.jsonl \
+  --report-output logs/candidate_reward/final_only_vs_final_plus_process_selection_report.md \
   --reward-config configs/reward/process_reward_v0.yaml
 ```
 
-如果要先看 `final-only` 基线，把 `configs/reward/process_reward_v0.yaml` 里的 `process_reward_weight` 临时改成 `0.0`，再跑上面的命令。
-
-如果要看 `final + process`，就保留当前配置里的 `process_reward_weight: 0.3`，并输出到：
+### 5. 查看当前正式报告
 
 ```bash
-python scripts/score_samples.py \
-  --input data/debug/gsm8k_train_debug.jsonl \
-  --output logs/process_reward_v0/gsm8k_train_debug_final_plus_process.jsonl \
-  --reward-config configs/reward/process_reward_v0.yaml
+sed -n '1,220p' logs/candidate_reward/final_only_vs_final_plus_process_selection_report.md
 ```
+
+当前正式产物：
+
+- `logs/candidates/gsm8k_train_debug_candidates.jsonl`
+- `logs/candidate_reward/gsm8k_train_debug_candidates_scored.jsonl`
+- `logs/candidate_reward/final_only_vs_final_plus_process_selection_report.md`
 
 ## 数据清洗原则
 
@@ -225,19 +212,19 @@ python scripts/score_samples.py \
 
 ## 下一步计划
 
-下一步默认继续执行 `step2`：
+下一步默认继续执行 `step2` 的收尾和修正：
 
-1. 先建立 `final-only` 基线
-2. 再建立 `final + process` 对照结果
-3. 输出第一版分析结论
-4. 再决定是否进入训练或候选轨迹实验
+1. 人工抽查 changed cases，确认 `final+process` 换选是否真的更好
+2. 重点检查长步骤样本，因为当前 `corr(num_steps, process_reward) = -0.8478`
+3. 如果确认 reward 对合理长推理过严，先调整 `process_reward_v0`
+4. 复跑 `100×4` reranking，再决定是否进入小规模训练或 reward-weighted SFT
 
 ## 当前协作约定
 
 - 总览信息优先维护在 `README.md`
 - 每个 step 单独维护一份 step 文档
 - 大更新可以积累一段后再统一 push
-- 训练、完整数据、日志默认放远端，不提交到仓库
+- 训练、完整数据、日志默认放远端，不提交到仓库；小规模 debug 实验报告和可复现实验产物可以按需提交
 
 ## 已完成但暂不重复执行的事项
 
