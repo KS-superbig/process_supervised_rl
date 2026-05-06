@@ -6,11 +6,11 @@
 
 ## 1. step2 要解决什么
 
-`step2` 的目标不再是继续补环境，而是开始做第一版实验验证。
+`step2` 的目标不再是继续补环境，而是开始做第一版实验验证。当前 `step2` 已完成，本文档作为归档记录。
 
 核心问题只有两个：
 
-1. 当前规则版 `process reward v0` 是否足够合理，值得继续往下做
+1. 当前规则版 `process reward v0` 是否能证明过程信号有用
 2. `final-only reward` 和 `final + process reward` 的第一版对照该如何建立
 
 ## 2. step2 的输入
@@ -201,13 +201,77 @@ changed_selection_breakdown: 1->1 = 46, 0->0 = 4, 1->0 = 0, 0->1 = 0
 - 这说明 `process reward v0` 已经具备候选 reranking 信号价值。
 - 但 `corr(num_steps, process_reward) = -0.8478`，说明当前 reward 对长步骤仍偏严格。进入训练前，需要先人工抽查 changed cases，并判断是否调整长推理惩罚。
 
-## 10. step2 下一步
+## 10. changed case 人工初审
 
-建议先不直接进入训练，而是做一次 reward 质量收尾：
+对 `final+process` 改变 top1 的 `50` 个 changed cases 做了第一轮人工初审。
 
-1. 抽查 `final+process` 改变 top1 的样本。
-2. 重点看长步骤但合理的推理是否被压低。
-3. 必要时调整 `progress_contribution` 或过程分聚合方式。
-4. 复跑同一批 `100×4` 候选。
-5. 如果准确率仍不下降且过程质量更好，再进入小规模训练或 reward-weighted SFT。
+新增产物：
 
+- `logs/candidate_reward/changed_case_review_100x4.md`
+- `logs/candidate_reward/changed_case_first_pass_labels.md`
+
+初审标签：
+
+```text
+better: 16
+tie: 20
+length_bias_acceptable: 3
+worse_length_bias: 8
+worse_process: 1
+both_wrong: 2
+```
+
+关键结论：
+
+- `process_reward_v0` 能过滤一部分跑题、乱码、代码污染候选。
+- 但它仍明显偏爱短、压缩、看起来干净的解法。
+- 规则 reward 可以作为 baseline / sanity check，但不适合作为 PRM 训练数据的主标注器。
+
+## 11. reward0 修正尝试
+
+基于人工初审，对 `process_reward_v0` 做了一轮小修正：
+
+- 增加 prompt/code artifact 惩罚，例如 `User:`、代码片段、commit 残片。
+- 增加 run-on 压缩多句惩罚。
+- 对出现硬污染的整条轨迹做全局扣分，避免平均聚合稀释。
+- 给“出现新数值计算”的步骤一个 progress 下限，减少合理长推理后半段被压低。
+
+复跑同一批 `100×4` 后：
+
+```text
+final_only_accuracy: 0.9300
+final_plus_process_accuracy: 0.9300
+changed_selection_count: 50 -> 45
+corr(num_steps, process_reward): -0.8478 -> -0.7952
+final+process selected shorter candidate: 31 -> 26
+final+process selected longer candidate: 1 -> 6
+```
+
+验证：
+
+```text
+pytest tests -v
+24 passed
+```
+
+这说明修正方向有效，但没有根治长度偏好。
+
+## 12. step2 最终判断
+
+`process_reward_v0` 的任务到这里应当收束：
+
+- 它已经证明过程信号有 reranking 价值。
+- 它没有在当前实验中伤害 final accuracy。
+- 它暴露了规则 reward 的上限和偏差。
+
+因此，下一阶段不再继续投入大量精力把规则 reward 调到完美。`process_reward_v0` 后续只作为 baseline / sanity check。
+
+下一阶段进入 `step3`：
+
+```text
+LLM API judge -> PRM training data -> PRM -> final+PRM reranking -> post-training
+```
+
+执行文档见：
+
+- `README_process_supervised_rl_step3.md`

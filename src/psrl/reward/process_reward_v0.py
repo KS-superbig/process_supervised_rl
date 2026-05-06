@@ -35,6 +35,16 @@ _FILLER_PATTERNS = (
     "as we know",
 )
 
+_ARTIFACT_PATTERNS = (
+    r"\buser\s*:",
+    r"\bassistant\s*:",
+    r"<commit_(?:before|after)>",
+    r"```",
+    r"^\s*#+\s+",
+    r"\bdef\s+[a-zA-Z_][a-zA-Z0-9_]*\s*\(",
+    r"\breturn\s+",
+)
+
 _CONCLUSION_CUES = ("therefore", "thus", "hence", "so", "answer", "final")
 
 
@@ -114,7 +124,10 @@ def score_process_steps(steps: list[str], component_weights: dict[str, float]) -
     count = float(len(steps))
     component_means = {key: value / count for key, value in component_sums.items()}
     score = sum(detail.weighted_score for detail in details) / count
-    return ProcessRewardResult(score=score, component_means=component_means, step_details=details)
+    hard_penalty_count = sum(1 for detail in details if detail.components["anti_hacking_penalty"] >= 1.0)
+    if hard_penalty_count:
+        score -= min(0.3, 0.12 * hard_penalty_count)
+    return ProcessRewardResult(score=_clamp(score, 0.0, 1.0), component_means=component_means, step_details=details)
 
 
 def _score_step_validity(step: str) -> float:
@@ -151,6 +164,8 @@ def _score_progress_contribution(step: str, seen_tokens: set[str]) -> float:
     novel = len([tok for tok in tokens if tok not in seen_tokens])
     novelty_ratio = novel / len(tokens)
     score = novelty_ratio
+    if _has_new_numeric_calculation(step, seen_tokens):
+        score = max(score, 0.65)
     if any(cue in step.lower() for cue in _CONCLUSION_CUES):
         score += 0.2
     return _clamp(score, 0.0, 1.0)
@@ -172,6 +187,12 @@ def _score_anti_hacking_penalty(step: str, previous_step: str) -> float:
     if len(step) > 220 and sum(ch.isdigit() for ch in step) < 2:
         penalty += 0.5
 
+    if _has_prompt_or_code_artifact(step):
+        penalty += 1.0
+
+    if _has_run_on_sentence_join(step):
+        penalty += 1.0
+
     return _clamp(penalty, 0.0, 1.0)
 
 
@@ -187,6 +208,21 @@ def _update_assignments(step: str, assignment_history: dict[str, str]) -> None:
 def _tokens(text: str) -> set[str]:
     toks = re.findall(r"[a-zA-Z0-9]+", text.lower())
     return {tok for tok in toks if tok not in _STOPWORDS}
+
+
+def _has_new_numeric_calculation(step: str, seen_tokens: set[str]) -> bool:
+    tokens = _tokens(step)
+    has_new_number = any(any(char.isdigit() for char in tok) and tok not in seen_tokens for tok in tokens)
+    has_operation = any(op in step for op in ("=", "+", "-", "*", "/", "%", "^"))
+    return has_new_number and has_operation
+
+
+def _has_prompt_or_code_artifact(step: str) -> bool:
+    return any(re.search(pattern, step, flags=re.IGNORECASE | re.MULTILINE) for pattern in _ARTIFACT_PATTERNS)
+
+
+def _has_run_on_sentence_join(step: str) -> bool:
+    return bool(re.search(r"[.!?][A-Z]", step)) and len(step) >= 80
 
 
 def _jaccard_similarity(a: set[str], b: set[str]) -> float:

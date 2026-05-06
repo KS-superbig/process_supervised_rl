@@ -11,16 +11,18 @@
 ## 当前状态
 
 - 当前总阶段：第一阶段
-- 当前 step：`step2`
+- 当前 step：`step2` 已完成，准备进入 `step3`
 - 当前 step 文档：[README_process_supervised_rl_step2.md](README_process_supervised_rl_step2.md)
-- 当前完成度：`step2` 已完成第一版候选轨迹 reranking 实验；`process reward v0` 在不降低 final accuracy 的情况下提升了被选候选的过程分
+- 下一 step 文档：[README_process_supervised_rl_step3.md](README_process_supervised_rl_step3.md)
+- 当前完成度：`step2` 已完成第一版候选轨迹 reranking 实验；`process_reward_v0` 证明了过程信号有用，但不再作为 PRM 训练数据的主标注器
 
 ## 当前目标
 
 - 使用 `GSM8K` 跑通最小实验闭环
-- 对比 `final-only reward` 与 `final + process reward` 的候选轨迹选择效果
+- 对比 `final-only reward` 与过程信号辅助的候选轨迹选择效果
 - 默认采用“本地开发，远端执行”的工作流
-- 下一步聚焦人工抽查 changed cases，并修正当前 process reward 对长步骤偏严格的问题
+- 下一步主线切换为：用强 LLM API judge 生成过程偏好数据，再训练 PRM，并用 PRM 做 post-training 前的 reranking / 数据筛选
+- 当前 `step3` 已跑通 DeepSeek API judge 的 `100×4` 标注闭环，下一步进入 PRM 训练
 
 ## 文档分工
 
@@ -49,7 +51,7 @@
 
 ### 3. `README_process_supervised_rl_step2.md`
 
-这是当前 `step2` 的执行文档。
+这是 `step2` 的实验归档文档。
 
 主要维护：
 
@@ -58,14 +60,27 @@
 - 当前推荐命令与产出物
 - `step2` 的验收标准
 
+### 4. `README_process_supervised_rl_step3.md`
+
+这是当前下一阶段 `step3` 的执行文档。
+
+主要维护：
+
+- 为什么不再用 `process_reward_v0` 作为 PRM 主标注器
+- LLM judge 如何输出结构化过程偏好
+- 如何从 judge 结果构造 PRM 训练数据
+- PRM 训练、reranking、post-training 的最小闭环
+
 ## 当前优先事项
 
 当前默认优先顺序：
 
-1. 人工抽查 `final+process` 改变 top1 的 changed cases
-2. 检查并修正 `process_reward_v0` 对长步骤偏严格的问题
-3. 基于修正后的 reward 复跑 `100×4` reranking
-4. 再决定是否进入小规模训练或 reward-weighted SFT
+1. 固定 `step2` 结论：`process_reward_v0` 只作为 baseline / sanity check
+2. 设计 LLM judge prompt 和 JSON 输出 schema
+3. 用 API judge 标注同一批 `100×4` candidates
+4. 从 judge 结果构造 trajectory-level preference 数据
+5. 训练第一版 PRM，并用 `final-only` vs `final+PRM` 做 reranking 对照
+6. 通过后再进入 reward-weighted SFT 或其它 post-training
 
 ## 当前已完成
 
@@ -77,18 +92,24 @@
 - `GSM8K` 测试集预处理完成，共生成 `1319` 条样本
 - `debug` 子集生成完成，共生成 `100` 条样本
 - 统一输出 schema 已经验证可用
-- `pytest tests -v` 已通过，当前共 `21` 个测试全部通过
+- `pytest tests -v` 已通过，当前共 `24` 个测试全部通过
 - `process reward v0` 已在 `debug subset` 上完成首轮打分检查
 - 远端已下载并验证 `DeepSeekMath-7B-Instruct` 本地模型：`/root/autodl-tmp/models/deepseek-math-7b-instruct`
 - 已生成 `100` 道 debug 题、每题 `4` 条候选，共 `400` 条模型候选轨迹
 - 已完成 `final-only` vs `final+process` 候选 reranking 分析：两者 top1 final accuracy 都是 `0.9300`，但 `final+process` 选中候选的平均 process reward 从 `0.6681` 提升到 `0.6978`
 - `final+process` 改变了 `50/100` 道题的 top1 选择，其中 `46` 个是 `1->1`，`4` 个是 `0->0`，没有 `1->0` 的准确率伤害
+- 已人工初审 changed cases：`process_reward_v0` 能过滤一部分跑题/污染候选，但也存在明显短答案偏好
+- 已对 `process_reward_v0` 做一轮 sanity 修正，复跑后 final accuracy 仍为 `0.9300`，但 `corr(num_steps, process_reward)` 仍约为 `-0.7952`
+- 已用 DeepSeek `deepseek-v4-flash` 对同一批 `100×4` candidates 完成 LLM judge 标注
+- 已生成 `324` 条 PRM preference rows
+- LLM judge top1 final accuracy 为 `0.9300`，相对 final-only 改变 `26/100` 道题，没有 `1->0` 准确率伤害
 
 这说明当前工程已经具备：
 
 - 远端可运行环境
 - 可复现的数据预处理脚本
 - 可用于后续 reward 计算和实验对照的数据底座
+- 可用于 LLM judge 标注的候选轨迹数据
 
 ## 合作者建议先看什么
 
@@ -96,9 +117,10 @@
 
 1. 先看当前总览文档 `README.md`
 2. 再看 `step1` 归档文档 `README_process_supervised_rl.md`
-3. 然后看当前执行文档 `README_process_supervised_rl_step2.md`
-4. 再看 `configs/`、`scripts/`、`src/` 的代码结构
-5. 最后直接进入“当前下一步命令”执行区
+3. 然后看 `step2` 归档文档 `README_process_supervised_rl_step2.md`
+4. 再看当前执行文档 `README_process_supervised_rl_step3.md`
+5. 再看 `configs/`、`scripts/`、`src/` 的代码结构
+6. 最后直接进入“当前下一步命令”执行区
 
 ## 工作流
 
@@ -138,9 +160,35 @@
 - 候选轨迹生成脚本
 - 候选轨迹 reranking 分析脚本
 
+## 当前方法判断
+
+`process_reward_v0` 的阶段性任务已经完成：
+
+- 它证明了 final answer 之外的过程信号会改变候选选择。
+- 它在 `100×4` 实验里没有造成 `1->0` 的 final accuracy 伤害。
+- 它暴露了规则 reward 的短答案偏好和脆弱性。
+
+因此，后续不再把 `process_reward_v0` 当作 PRM 训练数据的主标注器。新的主线是：
+
+```text
+local 7B model generates candidates
+-> strong LLM API judges candidate process quality
+-> build preference / score data
+-> train PRM
+-> final-only vs final+PRM reranking
+-> post-training policy with PRM-filtered or PRM-weighted data
+```
+
+`process_reward_v0` 继续保留为：
+
+- baseline
+- sanity check
+- LLM judge 输出的辅助对照
+- 规则风险样例来源
+
 ## 当前下一步命令
 
-下面这组命令对应的是当前 `step2` 后续复现实验和分析。
+下面这组命令对应的是进入 `step3` 前的环境确认和候选数据检查。
 
 ### 1. 进入远端仓库
 
@@ -154,10 +202,11 @@ git checkout main
 ```bash
 ls /root/autodl-tmp/models/deepseek-math-7b-instruct
 ls data/debug/gsm8k_train_debug.jsonl
+ls logs/candidates/gsm8k_train_debug_candidates.jsonl
 pytest tests -v
 ```
 
-### 3. 复跑 `100×4` 候选生成
+### 3. 如候选文件丢失，再复跑 `100×4` 候选生成
 
 ```bash
 python scripts/generate_candidates.py \
@@ -171,20 +220,24 @@ python scripts/generate_candidates.py \
   --max-new-tokens 512
 ```
 
-### 4. 复跑候选 reranking 分析
-
-```bash
-python scripts/analyze_candidate_selection.py \
-  --input logs/candidates/gsm8k_train_debug_candidates.jsonl \
-  --scored-output logs/candidate_reward/gsm8k_train_debug_candidates_scored.jsonl \
-  --report-output logs/candidate_reward/final_only_vs_final_plus_process_selection_report.md \
-  --reward-config configs/reward/process_reward_v0.yaml
-```
-
-### 5. 查看当前正式报告
+### 4. 查看 step2 归档报告
 
 ```bash
 sed -n '1,220p' logs/candidate_reward/final_only_vs_final_plus_process_selection_report.md
+sed -n '1,220p' logs/candidate_reward/changed_case_first_pass_labels.md
+```
+
+### 5. 下一步要新增的命令入口
+
+`step3` 需要新增 API judge 脚本，目标命令形态如下：
+
+```text
+python scripts/judge_candidates_with_llm.py \
+  --input logs/candidates/gsm8k_train_debug_candidates.jsonl \
+  --output logs/llm_judge/gsm8k_train_debug_candidates_judged.jsonl \
+  --provider deepseek \
+  --model deepseek-v4-flash \
+  --limit 100
 ```
 
 当前正式产物：
@@ -192,6 +245,10 @@ sed -n '1,220p' logs/candidate_reward/final_only_vs_final_plus_process_selection
 - `logs/candidates/gsm8k_train_debug_candidates.jsonl`
 - `logs/candidate_reward/gsm8k_train_debug_candidates_scored.jsonl`
 - `logs/candidate_reward/final_only_vs_final_plus_process_selection_report.md`
+- `logs/candidate_reward/changed_case_review_100x4.md`
+- `logs/candidate_reward/changed_case_first_pass_labels.md`
+- `logs/llm_judge/gsm8k_train_debug_candidates_judged_deepseek_v4_flash_100.jsonl`
+- `data/prm/gsm8k_train_debug_prm_preferences_deepseek_v4_flash_100.jsonl`
 
 ## 数据清洗原则
 
@@ -212,12 +269,39 @@ sed -n '1,220p' logs/candidate_reward/final_only_vs_final_plus_process_selection
 
 ## 下一步计划
 
-下一步默认继续执行 `step2` 的收尾和修正：
+下一步进入 `step3`：
 
-1. 人工抽查 changed cases，确认 `final+process` 换选是否真的更好
-2. 重点检查长步骤样本，因为当前 `corr(num_steps, process_reward) = -0.8478`
-3. 如果确认 reward 对合理长推理过严，先调整 `process_reward_v0`
-4. 复跑 `100×4` reranking，再决定是否进入小规模训练或 reward-weighted SFT
+1. 定义 LLM judge JSON schema。已完成
+2. 实现 `scripts/judge_candidates_with_llm.py`。已完成
+3. 先用 `10` 道题做 API smoke test。已完成
+4. 再标注完整 `100×4` candidates。已完成
+5. 生成 judge ranking / preference pairs。已完成
+6. 训练第一版 trajectory-level PRM。
+7. 用 `final-only` vs `final+PRM` 做候选 reranking。
+8. 如果 PRM 不降低 final accuracy 且人工抽查过程质量更好，再进入 reward-weighted SFT / post-training。
+
+## API 选择建议
+
+截至 `2026-05-06`，建议优先使用 DeepSeek API 跑第一版 judge smoke test：
+
+- DeepSeek 官方 API 文档明确支持 OpenAI 格式、JSON Output、1M context 的 `deepseek-v4-flash/pro`。
+- `deepseek-v4-flash` 官方价格明显更适合批量标注：cache miss input `$0.14 / 1M tokens`，output `$0.28 / 1M tokens`。
+- Kimi 官方文档显示最新主力是 `Kimi K2.6`，上下文 `256K`，能力强，但价格和限速需要在控制台确认；旧 `kimi-k2` 系列将在 `2026-05-25` 下线，不建议新实验依赖旧模型。
+- 如果 Kimi 有免费额度，可以用来抽样复核 DeepSeek judge 的一致性，不建议第一版主流程押在免费额度上。
+
+参考文档：
+
+- DeepSeek Models & Pricing: <https://api-docs.deepseek.com/quick_start/pricing>
+- Kimi K2.6: <https://platform.kimi.com/docs/pricing/chat-k26>
+- Kimi K2 legacy notice: <https://platform.kimi.com/docs/pricing/chat-k2>
+- Kimi 充值与限速: <https://platform.kimi.com/docs/pricing/limits>
+
+推荐策略：
+
+1. 先买少量 DeepSeek 额度，跑 `10` 道题 smoke test。
+2. 确认 JSON 稳定、成本可控后，跑完整 `100×4`。
+3. 用 Kimi K2.6 免费额度或小额充值复核 `20` 个边界样本。
+4. 如果 DeepSeek 与 Kimi 在边界样本上分歧很大，再考虑 ensemble judge；否则先用 DeepSeek 继续推进 PRM 数据生产。
 
 ## 当前协作约定
 
