@@ -300,8 +300,8 @@ python scripts/train_prm.py \
 远端验证：
 
 ```text
-pytest tests -v
-30 passed
+PYTHONDONTWRITEBYTECODE=1 pytest -q -p no:cacheprovider tests
+34 passed
 ```
 
 DeepSeek judge 产物：
@@ -344,12 +344,13 @@ estimated_cost_rmb_at_7_2: 0.4341
 - LLM judge top1 没有降低 final accuracy。
 - LLM judge 相比 final-only 改变了 `26/100` 道题，且没有 `1->0`。
 - `324` 条 preference rows 已足够启动第一版 PRM 训练 smoke test。
+- 第一版轻量 trajectory-level preference PRM 已完成 smoke training：`324` 个 preference pairs，训练集 pair accuracy `0.9722`，final loss `0.151557`。
+- `final+PRM` top1 final accuracy 为 `0.9300`，与 final-only 持平；改变 `46/100` 道题，其中 `42` 个是 `1->1`、`4` 个是 `0->0`，没有 `1->0` 准确率伤害。
 
 当前下一步：
 
 ```text
-在远端运行 scripts/train_prm.py
--> 产出 logs/prm/gsm8k_debug_prm_smoke/model.json
--> 产出 scored_candidates.jsonl 和 final-only vs final+PRM 报告
--> 检查 final_plus_prm_accuracy 是否不低于 final_only_accuracy
+人工抽查 final+PRM 改变 top1 的样本
+-> 如果过程质量不更差，扩展到 1k×4 candidates
+-> 后续再进入 reward-weighted SFT / post-training
 ```
