@@ -11,18 +11,18 @@
 ## 当前状态
 
 - 当前总阶段：第一阶段
-- 当前 step：`step2` 已完成，准备进入 `step3`
-- 当前 step 文档：[README_process_supervised_rl_step2.md](README_process_supervised_rl_step2.md)
-- 下一 step 文档：[README_process_supervised_rl_step3.md](README_process_supervised_rl_step3.md)
-- 当前完成度：`step2` 已完成第一版候选轨迹 reranking 实验；`process_reward_v0` 证明了过程信号有用，但不再作为 PRM 训练数据的主标注器
+- 当前 step：`step3`
+- 当前 step 文档：[README_process_supervised_rl_step3.md](README_process_supervised_rl_step3.md)
+- 上一 step 归档文档：[README_process_supervised_rl_step2.md](README_process_supervised_rl_step2.md)
+- 当前完成度：`step3` 已跑通 DeepSeek API judge 的 `100×4` 标注闭环，已生成 PRM preference 数据；下一步是训练第一版 trajectory-level preference PRM
 
 ## 当前目标
 
 - 使用 `GSM8K` 跑通最小实验闭环
-- 对比 `final-only reward` 与过程信号辅助的候选轨迹选择效果
+- 对比 `final-only`、`final+LLM-judge`、`final+PRM` 的候选轨迹选择效果
 - 默认采用“本地开发，远端执行”的工作流
-- 下一步主线切换为：用强 LLM API judge 生成过程偏好数据，再训练 PRM，并用 PRM 做 post-training 前的 reranking / 数据筛选
-- 当前 `step3` 已跑通 DeepSeek API judge 的 `100×4` 标注闭环，下一步进入 PRM 训练
+- 当前主线：用强 LLM API judge 生成过程偏好数据，再训练 PRM，并用 PRM 做 post-training 前的 reranking / 数据筛选
+- 当前下一步：用 `324` 条 DeepSeek judge preference rows 做第一版 PRM smoke training
 
 ## 文档分工
 
@@ -75,12 +75,12 @@
 
 当前默认优先顺序：
 
-1. 固定 `step2` 结论：`process_reward_v0` 只作为 baseline / sanity check
-2. 设计 LLM judge prompt 和 JSON 输出 schema
-3. 用 API judge 标注同一批 `100×4` candidates
-4. 从 judge 结果构造 trajectory-level preference 数据
-5. 训练第一版 PRM，并用 `final-only` vs `final+PRM` 做 reranking 对照
-6. 通过后再进入 reward-weighted SFT 或其它 post-training
+1. 训练第一版 trajectory-level preference PRM
+2. 用 PRM 给同一批 `100×4` candidates 打分
+3. 对比 `final-only` vs `final+PRM` top1
+4. 人工抽查 `final+PRM` 改变 top1 的样本
+5. 如果 PRM 不降低 final accuracy 且过程质量更好，再扩展到 `1k×4` candidates
+6. 后续再进入 reward-weighted SFT 或其它 post-training
 
 ## 当前已完成
 
@@ -92,7 +92,7 @@
 - `GSM8K` 测试集预处理完成，共生成 `1319` 条样本
 - `debug` 子集生成完成，共生成 `100` 条样本
 - 统一输出 schema 已经验证可用
-- `pytest tests -v` 已通过，当前共 `24` 个测试全部通过
+- `pytest tests -v` 已通过，当前共 `30` 个测试全部通过
 - `process reward v0` 已在 `debug subset` 上完成首轮打分检查
 - 远端已下载并验证 `DeepSeekMath-7B-Instruct` 本地模型：`/root/autodl-tmp/models/deepseek-math-7b-instruct`
 - 已生成 `100` 道 debug 题、每题 `4` 条候选，共 `400` 条模型候选轨迹
@@ -103,6 +103,7 @@
 - 已用 DeepSeek `deepseek-v4-flash` 对同一批 `100×4` candidates 完成 LLM judge 标注
 - 已生成 `324` 条 PRM preference rows
 - LLM judge top1 final accuracy 为 `0.9300`，相对 final-only 改变 `26/100` 道题，没有 `1->0` 准确率伤害
+- DeepSeek judge 实际费用约 `$0.0603`，折合约 `0.43 RMB`
 
 这说明当前工程已经具备：
 
@@ -110,6 +111,7 @@
 - 可复现的数据预处理脚本
 - 可用于后续 reward 计算和实验对照的数据底座
 - 可用于 LLM judge 标注的候选轨迹数据
+- 可用于 PRM smoke training 的第一版 preference 数据
 
 ## 合作者建议先看什么
 
@@ -159,6 +161,8 @@
 - 样本级 reward 聚合与打分脚本
 - 候选轨迹生成脚本
 - 候选轨迹 reranking 分析脚本
+- LLM judge prompt / JSON parsing / DeepSeek API 调用脚本
+- PRM preference dataset 构造脚本
 
 ## 当前方法判断
 
@@ -188,21 +192,24 @@ local 7B model generates candidates
 
 ## 当前下一步命令
 
-下面这组命令对应的是进入 `step3` 前的环境确认和候选数据检查。
+下面这组命令对应的是当前 `step3` 继续推进 PRM 前的环境确认和数据检查。
 
 ### 1. 进入远端仓库
 
 ```bash
 cd ~/autodl-tmp/process_supervised_rl
 git checkout main
+git pull --ff-only origin main
 ```
 
-### 2. 确认模型、数据和测试
+### 2. 确认模型、候选、judge 结果、PRM 数据和测试
 
 ```bash
 ls /root/autodl-tmp/models/deepseek-math-7b-instruct
 ls data/debug/gsm8k_train_debug.jsonl
 ls logs/candidates/gsm8k_train_debug_candidates.jsonl
+ls logs/llm_judge/gsm8k_train_debug_candidates_judged_deepseek_v4_flash_100.jsonl
+ls data/prm/gsm8k_train_debug_prm_preferences_deepseek_v4_flash_100.jsonl
 pytest tests -v
 ```
 
@@ -220,24 +227,38 @@ python scripts/generate_candidates.py \
   --max-new-tokens 512
 ```
 
-### 4. 查看 step2 归档报告
+### 4. 如 judge 文件丢失，再复跑 DeepSeek judge
 
 ```bash
-sed -n '1,220p' logs/candidate_reward/final_only_vs_final_plus_process_selection_report.md
-sed -n '1,220p' logs/candidate_reward/changed_case_first_pass_labels.md
-```
+export DEEPSEEK_API_KEY='<your-key>'
 
-### 5. 下一步要新增的命令入口
-
-`step3` 需要新增 API judge 脚本，目标命令形态如下：
-
-```text
 python scripts/judge_candidates_with_llm.py \
   --input logs/candidates/gsm8k_train_debug_candidates.jsonl \
-  --output logs/llm_judge/gsm8k_train_debug_candidates_judged.jsonl \
+  --output logs/llm_judge/gsm8k_train_debug_candidates_judged_deepseek_v4_flash_100.jsonl \
   --provider deepseek \
   --model deepseek-v4-flash \
-  --limit 100
+  --limit 100 \
+  --max-tokens 4096 \
+  --parse-retries 1
+```
+
+### 5. 如 PRM preference 文件丢失，再重新构造
+
+```bash
+python scripts/build_prm_dataset.py \
+  --candidates logs/candidates/gsm8k_train_debug_candidates.jsonl \
+  --judgements logs/llm_judge/gsm8k_train_debug_candidates_judged_deepseek_v4_flash_100.jsonl \
+  --output data/prm/gsm8k_train_debug_prm_preferences_deepseek_v4_flash_100.jsonl
+```
+
+### 6. 当前下一步要新增的训练入口
+
+PRM 训练脚本还没实现，目标命令形态如下：
+
+```text
+python scripts/train_prm.py \
+  --preferences data/prm/gsm8k_train_debug_prm_preferences_deepseek_v4_flash_100.jsonl \
+  --output-dir logs/prm/gsm8k_debug_prm_smoke
 ```
 
 当前正式产物：
@@ -269,7 +290,7 @@ python scripts/judge_candidates_with_llm.py \
 
 ## 下一步计划
 
-下一步进入 `step3`：
+下一步继续执行 `step3`：
 
 1. 定义 LLM judge JSON schema。已完成
 2. 实现 `scripts/judge_candidates_with_llm.py`。已完成
@@ -282,7 +303,7 @@ python scripts/judge_candidates_with_llm.py \
 
 ## API 选择建议
 
-截至 `2026-05-06`，建议优先使用 DeepSeek API 跑第一版 judge smoke test：
+截至 `2026-05-07`，建议继续优先使用 DeepSeek API 跑 judge 标注：
 
 - DeepSeek 官方 API 文档明确支持 OpenAI 格式、JSON Output、1M context 的 `deepseek-v4-flash/pro`。
 - `deepseek-v4-flash` 官方价格明显更适合批量标注：cache miss input `$0.14 / 1M tokens`，output `$0.28 / 1M tokens`。
