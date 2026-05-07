@@ -222,14 +222,25 @@ python scripts/build_prm_dataset.py \
 
 ### 7.3 PRM 训练脚本
 
-第一版可以先做最小模型训练：
+第一版先做最小 trajectory-level preference PRM：
 
 ```text
 input: question + candidate_text
-target: judge score 或 chosen/rejected preference
+target: chosen/rejected preference
 ```
 
-推荐先做 preference 模式，不急着做复杂 step-level reward。
+当前已新增轻量训练入口：
+
+```bash
+python scripts/train_prm.py \
+  --preferences data/prm/gsm8k_train_debug_prm_preferences_deepseek_v4_flash_100.jsonl \
+  --output-dir logs/prm/gsm8k_debug_prm_smoke \
+  --candidates logs/candidates/gsm8k_train_debug_candidates.jsonl \
+  --scored-output logs/prm/gsm8k_debug_prm_smoke/scored_candidates.jsonl \
+  --report-output logs/prm/gsm8k_debug_prm_smoke/final_only_vs_final_plus_prm_selection_report.md
+```
+
+这个版本是纯 Python 线性词袋 preference PRM，用于 smoke test 数据闭环和 reranking 验收；不急着做复杂 step-level reward，也不急着上 transformer reward head。
 
 ## 8. step3 验收标准
 
@@ -277,10 +288,14 @@ target: judge score 或 chosen/rejected preference
 
 - `src/psrl/llm_judge.py`
 - `src/psrl/prm_dataset.py`
+- `src/psrl/prm.py`
 - `scripts/judge_candidates_with_llm.py`
 - `scripts/build_prm_dataset.py`
+- `scripts/train_prm.py`
 - `tests/test_llm_judge.py`
 - `tests/test_prm_dataset.py`
+- `tests/test_prm_training.py`
+- `tests/test_train_prm_script.py`
 
 远端验证：
 
@@ -330,10 +345,11 @@ estimated_cost_rmb_at_7_2: 0.4341
 - LLM judge 相比 final-only 改变了 `26/100` 道题，且没有 `1->0`。
 - `324` 条 preference rows 已足够启动第一版 PRM 训练 smoke test。
 
-下一步：
+当前下一步：
 
 ```text
-训练第一版 trajectory-level preference PRM
--> 用 PRM 对同一批 100x4 candidates 打分
--> 对比 final-only vs final+PRM
+在远端运行 scripts/train_prm.py
+-> 产出 logs/prm/gsm8k_debug_prm_smoke/model.json
+-> 产出 scored_candidates.jsonl 和 final-only vs final+PRM 报告
+-> 检查 final_plus_prm_accuracy 是否不低于 final_only_accuracy
 ```

@@ -14,7 +14,7 @@
 - 当前 step：`step3`
 - 当前 step 文档：[README_process_supervised_rl_step3.md](README_process_supervised_rl_step3.md)
 - 上一 step 归档文档：[README_process_supervised_rl_step2.md](README_process_supervised_rl_step2.md)
-- 当前完成度：`step3` 已跑通 DeepSeek API judge 的 `100×4` 标注闭环，已生成 PRM preference 数据；下一步是训练第一版 trajectory-level preference PRM
+- 当前完成度：`step3` 已跑通 DeepSeek API judge 的 `100×4` 标注闭环，已生成 PRM preference 数据；已新增第一版 trajectory-level preference PRM smoke training 入口
 
 ## 当前目标
 
@@ -22,7 +22,7 @@
 - 对比 `final-only`、`final+LLM-judge`、`final+PRM` 的候选轨迹选择效果
 - 默认采用“本地开发，远端执行”的工作流
 - 当前主线：用强 LLM API judge 生成过程偏好数据，再训练 PRM，并用 PRM 做 post-training 前的 reranking / 数据筛选
-- 当前下一步：用 `324` 条 DeepSeek judge preference rows 做第一版 PRM smoke training
+- 当前下一步：在远端用 `324` 条 DeepSeek judge preference rows 跑第一版 PRM smoke training，并检查 `final-only` vs `final+PRM`
 
 ## 文档分工
 
@@ -112,6 +112,7 @@
 - 可用于后续 reward 计算和实验对照的数据底座
 - 可用于 LLM judge 标注的候选轨迹数据
 - 可用于 PRM smoke training 的第一版 preference 数据
+- 可执行的轻量 trajectory-level preference PRM 训练入口
 
 ## 合作者建议先看什么
 
@@ -251,14 +252,17 @@ python scripts/build_prm_dataset.py \
   --output data/prm/gsm8k_train_debug_prm_preferences_deepseek_v4_flash_100.jsonl
 ```
 
-### 6. 当前下一步要新增的训练入口
+### 6. 训练第一版 trajectory-level preference PRM
 
-PRM 训练脚本还没实现，目标命令形态如下：
+第一版 PRM 是轻量 trajectory-level preference 模型，用 `question + candidate_text` 作为输入，用 chosen/rejected pairwise loss 学习 judge preference。它用于 smoke test 整个 PRM reranking 闭环，后续可以替换为 transformer reward head。
 
-```text
+```bash
 python scripts/train_prm.py \
   --preferences data/prm/gsm8k_train_debug_prm_preferences_deepseek_v4_flash_100.jsonl \
-  --output-dir logs/prm/gsm8k_debug_prm_smoke
+  --output-dir logs/prm/gsm8k_debug_prm_smoke \
+  --candidates logs/candidates/gsm8k_train_debug_candidates.jsonl \
+  --scored-output logs/prm/gsm8k_debug_prm_smoke/scored_candidates.jsonl \
+  --report-output logs/prm/gsm8k_debug_prm_smoke/final_only_vs_final_plus_prm_selection_report.md
 ```
 
 当前正式产物：
@@ -297,8 +301,8 @@ python scripts/train_prm.py \
 3. 先用 `10` 道题做 API smoke test。已完成
 4. 再标注完整 `100×4` candidates。已完成
 5. 生成 judge ranking / preference pairs。已完成
-6. 训练第一版 trajectory-level PRM。
-7. 用 `final-only` vs `final+PRM` 做候选 reranking。
+6. 训练第一版 trajectory-level PRM。代码入口已新增，待远端 smoke run
+7. 用 `final-only` vs `final+PRM` 做候选 reranking。代码入口已新增，待远端报告
 8. 如果 PRM 不降低 final accuracy 且人工抽查过程质量更好，再进入 reward-weighted SFT / post-training。
 
 ## API 选择建议
