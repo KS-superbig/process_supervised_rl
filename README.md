@@ -106,6 +106,8 @@
 - DeepSeek judge 实际费用约 `$0.0603`，折合约 `0.43 RMB`
 - 已完成第一版轻量 trajectory-level preference PRM smoke training：`324` 个 preference pairs，训练集 pair accuracy `0.9722`
 - `final+PRM` top1 final accuracy 为 `0.9300`，相对 final-only 改变 `46/100` 道题，其中 `42` 个是 `1->1`、`4` 个是 `0->0`，没有 `1->0` 准确率伤害
+- 已完成 changed top1 的 DeepSeek 二选一抽查：`46` 个 changed 样本中，DeepSeek 支持 PRM `17` 个、支持 final-only `29` 个
+- 已完成轻量 PRM 小规模调参（120/0.12/0.0）：对原始 4-candidate judge 的一致率提升到 `0.7100`（基线约 `0.6700`），但仍低于 final-only 的 `0.7400`
 
 这说明当前工程已经具备：
 
@@ -309,8 +311,9 @@ python scripts/train_prm.py \
 5. 生成 judge ranking / preference pairs。已完成
 6. 训练第一版 trajectory-level PRM。已完成
 7. 用 `final-only` vs `final+PRM` 做候选 reranking。已完成
-8. 人工抽查 `final+PRM` 改变 top1 的样本。
-9. 如果 PRM 不降低 final accuracy 且人工抽查过程质量更好，再扩展到 `1k×4`，之后进入 reward-weighted SFT / post-training。
+8. 人工抽查 `final+PRM` 改变 top1 的样本。已完成
+9. 基于抽查结果，先做 PRM 建模改进（超出轻量线性词袋），再决定是否扩展到 `1k×4`。
+10. 新版 PRM 如果在 judge 一致率和人工抽查都不差于 final-only，再进入 `1k×4` 与后续 reward-weighted SFT / post-training。
 
 ## API 选择建议
 

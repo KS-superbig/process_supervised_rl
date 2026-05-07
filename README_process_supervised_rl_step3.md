@@ -346,11 +346,14 @@ estimated_cost_rmb_at_7_2: 0.4341
 - `324` 条 preference rows 已足够启动第一版 PRM 训练 smoke test。
 - 第一版轻量 trajectory-level preference PRM 已完成 smoke training：`324` 个 preference pairs，训练集 pair accuracy `0.9722`，final loss `0.151557`。
 - `final+PRM` top1 final accuracy 为 `0.9300`，与 final-only 持平；改变 `46/100` 道题，其中 `42` 个是 `1->1`、`4` 个是 `0->0`，没有 `1->0` 准确率伤害。
+- 对 `46` 个 changed top1 样本完成 DeepSeek 二选一抽查：支持 PRM `17`、支持 final-only `29`（`0->0` 子集中 PRM `3`、final-only `1`）。
+- 在轻量 PRM 上做小规模超参搜索后，较优配置 `epochs=120, lr=0.12, l2=0.0`：对原始 4-candidate judge 的一致率升至 `0.7100`（基线约 `0.6700`），但仍低于 final-only 的 `0.7400`；final accuracy 仍为 `0.9300`。
 
 当前下一步：
 
 ```text
-人工抽查 final+PRM 改变 top1 的样本
--> 如果过程质量不更差，扩展到 1k×4 candidates
+先做 PRM 建模改进（超出轻量线性词袋）
+-> 目标：judge 一致率不低于 final-only，并保持 final accuracy 不下降
+-> 满足后再扩展到 1k×4 candidates
 -> 后续再进入 reward-weighted SFT / post-training
 ```
