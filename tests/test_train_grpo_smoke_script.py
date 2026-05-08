@@ -137,7 +137,7 @@ def test_grpo_config_kwargs_filters_unsupported_trl_parameters():
     }
 
 
-def test_select_tracked_lora_param_name_picks_lora_weight():
+def test_select_tracked_lora_param_names_picks_lora_weights():
     module = _load_script_module("train_grpo_smoke.py")
 
     class FakeModel:
@@ -145,30 +145,36 @@ def test_select_tracked_lora_param_name_picks_lora_weight():
             return [
                 ("base_model.model.layers.0.attn.q_proj.weight", object()),
                 ("base_model.model.layers.0.attn.q_proj.lora_A.weight", object()),
+                ("base_model.model.layers.0.attn.q_proj.lora_B.weight", object()),
             ]
 
-    name = module._select_tracked_lora_param_name(FakeModel())
-    assert name == "base_model.model.layers.0.attn.q_proj.lora_A.weight"
+    names = module._select_tracked_lora_param_names(FakeModel(), limit=2)
+    assert names == [
+        "base_model.model.layers.0.attn.q_proj.lora_A.weight",
+        "base_model.model.layers.0.attn.q_proj.lora_B.weight",
+    ]
 
 
 def test_write_adapter_diagnostics_sets_change_flags(tmp_path):
     module = _load_script_module("train_grpo_smoke.py")
-    pre = {"sha256": "aaa", "norm": 1.0, "numel": 2}
-    post = {"sha256": "bbb", "norm": 1.2, "numel": 2}
-    saved = {"sha256": "bbb", "norm": 1.2, "numel": 2}
+    pre = {"x.lora_A.weight": {"sha256": "aaa", "norm": 1.0, "numel": 2}}
+    post = {"x.lora_A.weight": {"sha256": "bbb", "norm": 1.2, "numel": 2}}
+    saved = {"x.lora_A.weight": {"sha256": "bbb", "norm": 1.2, "numel": 2}}
 
     module._write_adapter_diagnostics(
         tmp_path,
-        tracked_param_name="x.lora_A.weight",
-        pre_snapshot=pre,
-        post_train_snapshot=post,
-        saved_snapshot=saved,
+        tracked_param_names=["x.lora_A.weight"],
+        pre_snapshots=pre,
+        post_train_snapshots=post,
+        saved_snapshots=saved,
+        grad_stats={"total_params": 10, "trainable_params": 2, "total_lora_params": 2, "trainable_lora_params": 2},
+        optimizer_stats={"optimizer_params": 2, "optimizer_lora_params": 2, "trainable_lora_params": 2},
     )
 
     payload = json.loads((tmp_path / "adapter_diagnostics.json").read_text(encoding="utf-8"))
-    assert payload["tracked_param_name"] == "x.lora_A.weight"
-    assert payload["changed_in_memory_after_train"] is True
-    assert payload["saved_matches_post_train_memory"] is True
+    assert payload["tracked_param_names"] == ["x.lora_A.weight"]
+    assert payload["any_changed_in_memory_after_train"] is True
+    assert payload["all_saved_match_post_train_memory"] is True
 
 
 def test_saved_param_key_candidates_adds_non_default_fallback():
