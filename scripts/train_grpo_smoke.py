@@ -224,7 +224,11 @@ def _capture_saved_adapter_snapshot(final_dir: Path, param_name: str) -> dict[st
     from safetensors.torch import load_file
 
     state_dict = load_file(str(final_dir / "adapter_model.safetensors"), device="cpu")
-    tensor = state_dict.get(param_name)
+    tensor = None
+    for key in _saved_param_key_candidates(param_name):
+        tensor = state_dict.get(key)
+        if tensor is not None:
+            break
     if tensor is None:
         raise RuntimeError(f"Tracked parameter not present in saved adapter: {param_name}")
     t = tensor.detach().float().cpu()
@@ -234,6 +238,13 @@ def _capture_saved_adapter_snapshot(final_dir: Path, param_name: str) -> dict[st
         "norm": float(t.norm().item()),
         "numel": int(t.numel()),
     }
+
+
+def _saved_param_key_candidates(param_name: str) -> list[str]:
+    candidates = [param_name]
+    if ".default." in param_name:
+        candidates.append(param_name.replace(".default.", "."))
+    return candidates
 
 
 def _write_adapter_diagnostics(

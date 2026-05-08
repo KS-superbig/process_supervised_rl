@@ -169,3 +169,11 @@ def test_write_adapter_diagnostics_sets_change_flags(tmp_path):
     assert payload["tracked_param_name"] == "x.lora_A.weight"
     assert payload["changed_in_memory_after_train"] is True
     assert payload["saved_matches_post_train_memory"] is True
+
+
+def test_saved_param_key_candidates_adds_non_default_fallback():
+    module = _load_script_module("train_grpo_smoke.py")
+
+    keys = module._saved_param_key_candidates("a.b.lora_A.default.weight")
+
+    assert keys == ["a.b.lora_A.default.weight", "a.b.lora_A.weight"]
