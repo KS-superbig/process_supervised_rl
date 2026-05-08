@@ -131,6 +131,22 @@ def save_mlp_prm(prm: MLPPreferencePRM, output_dir: Path, metrics: dict[str, flo
     return model_path, meta_path
 
 
+def load_mlp_prm(output_dir: Path, *, device: str = "cpu") -> MLPPreferencePRM:
+    torch = _import_torch()
+    meta_path = output_dir / "meta.json"
+    model_path = output_dir / "model.pt"
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    max_features = int(meta["max_features"])
+    metrics = meta.get("metrics", {})
+    hidden_dim = int(metrics.get("hidden_dim", 256))
+    model = _build_model(torch, input_dim=max_features, hidden_dim=hidden_dim)
+    state_dict = torch.load(model_path, map_location=device)
+    model.load_state_dict(state_dict)
+    model.to(device)
+    model.eval()
+    return MLPPreferencePRM(vocab=meta["vocab"], model=model, max_features=max_features)
+
+
 def score_candidates_with_mlp_prm(candidate_rows: Iterable[dict], prm: MLPPreferencePRM, *, device: str = "cpu") -> list[dict]:
     torch = _import_torch()
     model = prm.model
