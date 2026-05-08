@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import inspect
 import json
 from pathlib import Path
@@ -82,6 +83,13 @@ def main() -> None:
     )
     model = PeftModel.from_pretrained(model, str(args.sft_adapter))
     model.config.use_cache = False
+    tracked_param_name = _select_tracked_lora_param_name(model)
+    pre_snapshot = _capture_param_snapshot(model, tracked_param_name)
+    print(
+        f"[adapter-diag] pre-train {tracked_param_name}: "
+        f"sha256={pre_snapshot['sha256']} norm={pre_snapshot['norm']:.8f}",
+        flush=True,
+    )
 
     def reward_func(prompts, completions, gold_final, question, **_kwargs):
         rewards = []
@@ -107,8 +115,27 @@ def main() -> None:
     )
     _write_run_manifest(args, reward_config, len(rows))
     trainer.train()
+    post_train_snapshot = _capture_param_snapshot(model, tracked_param_name)
+    print(
+        f"[adapter-diag] post-train {tracked_param_name}: "
+        f"sha256={post_train_snapshot['sha256']} norm={post_train_snapshot['norm']:.8f}",
+        flush=True,
+    )
     trainer.save_model(str(args.output_dir / "final"))
     tokenizer.save_pretrained(str(args.output_dir / "final"))
+    saved_snapshot = _capture_saved_adapter_snapshot(args.output_dir / "final", tracked_param_name)
+    print(
+        f"[adapter-diag] saved-adapter {tracked_param_name}: "
+        f"sha256={saved_snapshot['sha256']} norm={saved_snapshot['norm']:.8f}",
+        flush=True,
+    )
+    _write_adapter_diagnostics(
+        args.output_dir,
+        tracked_param_name=tracked_param_name,
+        pre_snapshot=pre_snapshot,
+        post_train_snapshot=post_train_snapshot,
+        saved_snapshot=saved_snapshot,
+    )
 
 
 def prm_score(prm, question: str, completion: str, *, device: str) -> float:
@@ -173,6 +200,64 @@ def _build_grpo_config_kwargs(grpo_config_cls, args: argparse.Namespace, *, bf16
     return {key: value for key, value in candidate_kwargs.items() if key in supported}
 
 
+def _select_tracked_lora_param_name(model) -> str:
+    for name, _ in model.named_parameters():
+        if "lora_" in name and name.endswith("weight"):
+            return name
+    raise RuntimeError("No LoRA weight parameter found in model; cannot run adapter diagnostics.")
+
+
+def _capture_param_snapshot(model, param_name: str) -> dict[str, float | str]:
+    param = dict(model.named_parameters()).get(param_name)
+    if param is None:
+        raise RuntimeError(f"Missing tracked parameter in model: {param_name}")
+    tensor = param.detach().float().cpu()
+    payload = tensor.numpy().tobytes()
+    return {
+        "sha256": hashlib.sha256(payload).hexdigest(),
+        "norm": float(tensor.norm().item()),
+        "numel": int(tensor.numel()),
+    }
+
+
+def _capture_saved_adapter_snapshot(final_dir: Path, param_name: str) -> dict[str, float | str]:
+    from safetensors.torch import load_file
+
+    state_dict = load_file(str(final_dir / "adapter_model.safetensors"), device="cpu")
+    tensor = state_dict.get(param_name)
+    if tensor is None:
+        raise RuntimeError(f"Tracked parameter not present in saved adapter: {param_name}")
+    t = tensor.detach().float().cpu()
+    payload = t.numpy().tobytes()
+    return {
+        "sha256": hashlib.sha256(payload).hexdigest(),
+        "norm": float(t.norm().item()),
+        "numel": int(t.numel()),
+    }
+
+
+def _write_adapter_diagnostics(
+    output_dir: Path,
+    *,
+    tracked_param_name: str,
+    pre_snapshot: dict[str, float | str],
+    post_train_snapshot: dict[str, float | str],
+    saved_snapshot: dict[str, float | str],
+) -> None:
+    diagnostics = {
+        "tracked_param_name": tracked_param_name,
+        "pre_train": pre_snapshot,
+        "post_train": post_train_snapshot,
+        "saved_final_adapter": saved_snapshot,
+        "changed_in_memory_after_train": pre_snapshot["sha256"] != post_train_snapshot["sha256"],
+        "saved_matches_post_train_memory": saved_snapshot["sha256"] == post_train_snapshot["sha256"],
+    }
+    (output_dir / "adapter_diagnostics.json").write_text(
+        json.dumps(diagnostics, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+
 def _load_prm_calibration(path: Path | None) -> tuple[float, float]:
     if path is None:
         return 0.0, 1.0
@@ -206,6 +291,9 @@ def _write_run_manifest(args: argparse.Namespace, config: RewardConfig, num_rows
             "learning_rate": args.learning_rate,
             "beta": args.beta,
             "seed": args.seed,
+        },
+        "diagnostics": {
+            "adapter_diagnostics_path": str(args.output_dir / "adapter_diagnostics.json"),
         },
     }
     manifest_path = args.output_dir / "run_manifest.json"

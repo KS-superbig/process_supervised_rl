@@ -1,5 +1,6 @@
 import importlib.util
 from pathlib import Path
+import json
 
 
 def _load_script_module(name: str):
@@ -134,3 +135,37 @@ def test_grpo_config_kwargs_filters_unsupported_trl_parameters():
         "max_completion_length": 128,
         "beta": 0.04,
     }
+
+
+def test_select_tracked_lora_param_name_picks_lora_weight():
+    module = _load_script_module("train_grpo_smoke.py")
+
+    class FakeModel:
+        def named_parameters(self):
+            return [
+                ("base_model.model.layers.0.attn.q_proj.weight", object()),
+                ("base_model.model.layers.0.attn.q_proj.lora_A.weight", object()),
+            ]
+
+    name = module._select_tracked_lora_param_name(FakeModel())
+    assert name == "base_model.model.layers.0.attn.q_proj.lora_A.weight"
+
+
+def test_write_adapter_diagnostics_sets_change_flags(tmp_path):
+    module = _load_script_module("train_grpo_smoke.py")
+    pre = {"sha256": "aaa", "norm": 1.0, "numel": 2}
+    post = {"sha256": "bbb", "norm": 1.2, "numel": 2}
+    saved = {"sha256": "bbb", "norm": 1.2, "numel": 2}
+
+    module._write_adapter_diagnostics(
+        tmp_path,
+        tracked_param_name="x.lora_A.weight",
+        pre_snapshot=pre,
+        post_train_snapshot=post,
+        saved_snapshot=saved,
+    )
+
+    payload = json.loads((tmp_path / "adapter_diagnostics.json").read_text(encoding="utf-8"))
+    assert payload["tracked_param_name"] == "x.lora_A.weight"
+    assert payload["changed_in_memory_after_train"] is True
+    assert payload["saved_matches_post_train_memory"] is True
