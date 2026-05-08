@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import inspect
 import json
 from pathlib import Path
 import statistics
@@ -96,22 +97,7 @@ def main() -> None:
             rewards.append(breakdown.total_reward)
         return rewards
 
-    training_args = GRPOConfig(
-        output_dir=str(args.output_dir),
-        learning_rate=args.learning_rate,
-        per_device_train_batch_size=args.per_device_train_batch_size,
-        gradient_accumulation_steps=args.gradient_accumulation_steps,
-        max_steps=args.max_steps,
-        num_generations=args.num_generations,
-        max_prompt_length=args.max_prompt_length,
-        max_completion_length=args.max_completion_length,
-        beta=args.beta,
-        seed=args.seed,
-        bf16=torch.cuda.is_available(),
-        report_to=[],
-        logging_steps=1,
-        save_steps=max(args.max_steps, 1),
-    )
+    training_args = GRPOConfig(**_build_grpo_config_kwargs(GRPOConfig, args, bf16=torch.cuda.is_available()))
     trainer = GRPOTrainer(
         model=model,
         args=training_args,
@@ -164,6 +150,27 @@ def _completion_to_text(completion) -> str:
                 parts.append(str(item))
         return "\n".join(part for part in parts if part).strip()
     return str(completion)
+
+
+def _build_grpo_config_kwargs(grpo_config_cls, args: argparse.Namespace, *, bf16: bool) -> dict:
+    candidate_kwargs = {
+        "output_dir": str(args.output_dir),
+        "learning_rate": args.learning_rate,
+        "per_device_train_batch_size": args.per_device_train_batch_size,
+        "gradient_accumulation_steps": args.gradient_accumulation_steps,
+        "max_steps": args.max_steps,
+        "num_generations": args.num_generations,
+        "max_prompt_length": args.max_prompt_length,
+        "max_completion_length": args.max_completion_length,
+        "beta": args.beta,
+        "seed": args.seed,
+        "bf16": bf16,
+        "report_to": [],
+        "logging_steps": 1,
+        "save_steps": max(args.max_steps, 1),
+    }
+    supported = set(inspect.signature(grpo_config_cls.__init__).parameters)
+    return {key: value for key, value in candidate_kwargs.items() if key in supported}
 
 
 def _load_prm_calibration(path: Path | None) -> tuple[float, float]:

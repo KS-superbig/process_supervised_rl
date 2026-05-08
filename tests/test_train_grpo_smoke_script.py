@@ -98,3 +98,39 @@ def test_completion_to_text_handles_chat_completion_shape():
     text = module._completion_to_text([{"role": "assistant", "content": "Step 1\n#### 4"}])
 
     assert text == "Step 1\n#### 4"
+
+
+def test_grpo_config_kwargs_filters_unsupported_trl_parameters():
+    module = _load_script_module("train_grpo_smoke.py")
+
+    class FakeGRPOConfig:
+        def __init__(self, output_dir=None, max_completion_length=None, beta=0.0):
+            pass
+
+    parser = module.build_parser()
+    args = parser.parse_args(
+        [
+            "--model-name",
+            "/models/base",
+            "--sft-adapter",
+            "logs/sft/policy/final",
+            "--prm-dir",
+            "logs/prm_v2/best/trial_001",
+            "--output-dir",
+            "logs/rl/smoke",
+            "--max-prompt-length",
+            "256",
+            "--max-completion-length",
+            "128",
+            "--beta",
+            "0.04",
+        ]
+    )
+
+    kwargs = module._build_grpo_config_kwargs(FakeGRPOConfig, args, bf16=False)
+
+    assert kwargs == {
+        "output_dir": "logs/rl/smoke",
+        "max_completion_length": 128,
+        "beta": 0.04,
+    }
