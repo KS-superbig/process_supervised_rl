@@ -11,18 +11,27 @@
 ## 当前状态
 
 - 当前总阶段：第一阶段
-- 当前 step：`step3`
+- 当前 step：`step3` 收官，进入 `RL 对齐/benchmark`
 - 当前 step 文档：[README_process_supervised_rl_step3.md](README_process_supervised_rl_step3.md)
 - 上一 step 归档文档：[README_process_supervised_rl_step2.md](README_process_supervised_rl_step2.md)
-- 当前完成度：`step3` 已跑通 DeepSeek API judge 的 `100×4` 标注闭环，已生成 PRM preference 数据；第一版 trajectory-level preference PRM smoke training 已完成
+- 当前完成度：`1k×4` 数据闭环、PRM v2 大规模调参、PRM 筛选后 LoRA-SFT、GRPO 小网格训练与 `64` 条快速 benchmark 已完成；下一步做中等规模/全量 benchmark 与 changed-case 抽查
 
 ## 当前目标
 
 - 使用 `GSM8K` 跑通最小实验闭环
-- 对比 `final-only`、`final+LLM-judge`、`final+PRM` 的候选轨迹选择效果
+- 对比 `final-only`、`final+LLM-judge`、`final+PRM`、`PRM-filtered SFT` 的候选轨迹选择效果
 - 默认采用“本地开发，远端执行”的工作流
-- 当前主线：用强 LLM API judge 生成过程偏好数据，再训练 PRM，并用 PRM 做 post-training 前的 reranking / 数据筛选
-- 当前下一步：人工抽查 `final+PRM` 改变 top1 的样本，并决定是否扩展到 `1k×4` candidates
+- 当前主线：用强 LLM API judge 生成过程偏好数据，训练 PRM，再进入 RL（GRPO）对齐
+- 当前下一步：交接 benchmark，对 `PRM-filtered SFT` 与最佳 GRPO adapter 做更大样本评测，并判断是否继续调 GRPO 或扩大 PRM 数据
+
+## 当前数据集
+
+- 主数据集：`GSM8K`
+- 训练题：`data/processed/gsm8k_train.jsonl`（7473）
+- 测试题：`data/processed/gsm8k_test.jsonl`（1319）
+- 本阶段候选生成规模：`1000 questions × 4 candidates = 4000 trajectories`
+
+说明：当前主线没有切到其它“高级 PMK 数据集”；你现在用的还是 `GSM8K` + 本地 7B 生成轨迹 + LLM judge 标注。
 
 ## 文档分工
 
@@ -75,12 +84,11 @@
 
 当前默认优先顺序：
 
-1. 训练第一版 trajectory-level preference PRM
-2. 用 PRM 给同一批 `100×4` candidates 打分
-3. 对比 `final-only` vs `final+PRM` top1
-4. 人工抽查 `final+PRM` 改变 top1 的样本
-5. 如果 PRM 不降低 final accuracy 且过程质量更好，再扩展到 `1k×4` candidates
-6. 后续再进入 reward-weighted SFT 或其它 post-training
+1. 固化当前 `PRM + SFT + GRPO grid` 产物版本
+2. 由 benchmark 负责人按同一 decode config 评测 `base 7B` / `PRM-filtered-SFT` / `GRPO` adapters
+3. 优先对 `cfg3` 做中等规模评测（建议先 `256` 条，不急着全量 `1319`）
+4. 做 changed-case 抽查，确认没有 reward hacking
+5. 如果 GRPO 仍无法超过 SFT，再决定是继续调 RL 超参，还是扩大 PRM 数据重训
 
 ## 当前已完成
 
@@ -108,6 +116,28 @@
 - `final+PRM` top1 final accuracy 为 `0.9300`，相对 final-only 改变 `46/100` 道题，其中 `42` 个是 `1->1`、`4` 个是 `0->0`，没有 `1->0` 准确率伤害
 - 已完成 changed top1 的 DeepSeek 二选一抽查：`46` 个 changed 样本中，DeepSeek 支持 PRM `17` 个、支持 final-only `29` 个
 - 已完成轻量 PRM 小规模调参（120/0.12/0.0）：对原始 4-candidate judge 的一致率提升到 `0.7100`（基线约 `0.6700`），但仍低于 final-only 的 `0.7400`
+- 已完成 `1k×4` 候选生成（`4000` 条轨迹）与 DeepSeek judge 全量标注（`1000` 条）
+- 已完成 `1k×4` PRM preference 构造，得到 `3205` 条 pairwise preference 数据
+- 已完成 PRM v2 超参扫描（`108` 个 trial）
+- PRM v2 最优配置：`max_features=12000, hidden_dim=384, epochs=16, lr=0.0015, wd=0.0001`
+- PRM v2 最优指标：`judge_agree_prm_rate=0.795`，`final_plus_prm_accuracy=0.875`（与 final-only 持平，不降）
+- 已完成 PRM 筛选后 LoRA-SFT（7B 增量微调）并产出 adapter
+- SFT 训练摘要：`train_runtime=180.1s`，`train_loss=1.112`，`final eval_loss=1.068`
+- SFT 产物路径：`logs/sft/prm_filtered_lora_1000x4/final/adapter_model.safetensors`
+- 已修复并验证 GRPO LoRA 可训练性：训练前后多层 LoRA tensor hash 发生变化，保存后的 adapter 与训练后内存权重一致
+- 已完成 `4` 组 GRPO 小网格训练，均从同一个 SFT adapter 初始化：
+  - `cfg1_w0p1_lr5e6_b0p05`
+  - `cfg2_w0p2_lr5e6_b0p05`
+  - `cfg3_w0p2_lr2e6_b0p10`
+  - `cfg4_w0p3_lr2e6_b0p10`
+- 已完成 `64` 条 GSM8K test 快速 benchmark：
+  - `base_7b`: `29/64 = 0.4531`
+  - `prm_filtered_sft`: `36/64 = 0.5625`
+  - `grpo_cfg1`: `34/64 = 0.5313`
+  - `grpo_cfg2`: `31/64 = 0.4844`
+  - `grpo_cfg3`: `36/64 = 0.5625`
+  - `grpo_cfg4`: `35/64 = 0.5469`
+- 当前快速结论：`cfg3` 追平 SFT，尚未证明超过 SFT；建议先做 `256` 条中等规模 benchmark，再决定是否跑全量 `1319`
 
 这说明当前工程已经具备：
 
@@ -118,6 +148,8 @@
 - 可用于 PRM smoke training 的第一版 preference 数据
 - 可执行的轻量 trajectory-level preference PRM 训练入口
 - 第一版 `final-only` vs `final+PRM` reranking smoke report
+- 可复现的 `1k×4` 级别 PRM 训练闭环（judge -> preference -> prm_v2 sweep）
+- 可直接用于 RL 初始化的 SFT-LoRA policy adapter
 
 ## 合作者建议先看什么
 
@@ -196,9 +228,109 @@ local 7B model generates candidates
 - LLM judge 输出的辅助对照
 - 规则风险样例来源
 
+## RL 阶段规范（下一会话直接执行）
+
+下面是进入 GRPO/RL 前必须遵守的执行规范，避免 reward hacking 和无效训练。
+
+### 1) 初始策略与数据
+
+- policy init：使用已完成的 SFT adapter（`logs/sft/prm_filtered_lora_1000x4/final`）作为 RL 初始策略。
+- 训练题集：继续用 `GSM8K train`（`data/processed/gsm8k_train.jsonl`），先做小规模 smoke run（例如前 `512` 题）。
+- 评测题集：固定 `GSM8K test`（`data/processed/gsm8k_test.jsonl`），每次对比必须同解码参数。
+
+### 2) 奖励定义（必须固定版本）
+
+- 推荐总奖励：`R = w_final * final_reward + w_prm * prm_reward`。
+- `final_reward`：答案正确性（当前二值或归一分）。
+- `prm_reward`：PRM 分数标准化后使用（建议 z-score 或 min-max 后再 clip）。
+- 建议初值：`w_final=1.0, w_prm=0.2~0.4`，先从保守权重起步，观察稳定性再调大。
+- 必须记录奖励版本号与参数，避免“同名实验不同奖励函数”。
+
+### 3) 训练安全阈值
+
+- 强制监控：`reward_mean`、`KL`、`response_length`、`final_accuracy(proxy)`。
+- 触发停训条件（任一命中即暂停）：
+  - KL 持续暴涨（连续多个 eval window 超阈值）。
+  - 平均输出长度异常缩短/拉长（疑似投机策略）。
+  - final accuracy 明显下滑（相对 SFT baseline 下跌超预设阈值）。
+
+### 4) 防 reward hacking 检查
+
+- 每轮固定抽查 changed cases（建议 30~50 条）。
+- 检查项：空洞模板化回答、无关展开、格式投机、只押最终答案不保过程质量。
+- 必须保留抽查记录文件，作为是否继续扩训的 gate。
+
+### 5) 实验对照与命名
+
+- 统一四组对照：
+  1. `base_7b`
+  2. `prm_rerank`
+  3. `prm_filtered_sft_lora`
+  4. `grpo_policy`
+- 命名建议：`exp_<date>_<policy>_<rewardver>_<seed>`。
+- 每次实验至少固定 `seed`、`decode config`、`eval set` 三项。
+
+### 6) 扩训条件（满足后才加预算）
+
+- 与 `prm_filtered_sft_lora` 相比：
+  - final accuracy 不下降；
+  - judge 一致率或人工过程质量有明确提升；
+  - 无明显 reward hacking。
+
+## 阶段归档（截至 2026-05-08）
+
+- `1k×4` teacher 标注闭环完成。
+- PRM v2 达到高一致率并保持 final accuracy 不下降。
+- PRM 数据筛选后的 LoRA-SFT 完成，policy init 已具备。
+- 项目从 “PRM 构建阶段” 切换到 “RL 对齐主阶段”。
+
 ## 当前下一步命令
 
-下面这组命令对应的是当前 `step3` 继续推进 PRM 前的环境确认和数据检查。
+下面先给 RL 会话启动命令；其后的 `step3` 命令保留为历史参考。
+
+### Benchmark 交接说明
+
+远端当前在 AutoDL 上，主要执行目录：
+
+```bash
+cd ~/autodl-tmp/process_supervised_rl
+```
+
+关键产物路径：
+
+- base 模型：`/root/autodl-tmp/models/deepseek-math-7b-instruct`（约 `13G`）
+- GSM8K 数据：`data/processed/gsm8k_train.jsonl`、`data/processed/gsm8k_test.jsonl`
+- SFT adapter：`logs/sft/prm_filtered_lora_1000x4/final`
+- PRM v2：`logs/prm_v2/sweep_1000x4_v2/trial_056`
+- GRPO 网格：`logs/rl/grpo_grid_20260510`
+- 64 条快速 benchmark 结果：`logs/rl/grpo_grid_20260510/benchmark/results_64.jsonl`
+
+注意：AutoDL 登录提示里明确说明 `/root/autodl-tmp` 是数据盘，通常不会随“保存镜像”一起保存。也就是说，只给组员一个系统镜像大概率不够；需要同时共享上面这些数据盘 artifact，或者让组员直接使用同一台实例/同一块数据盘。
+
+建议下一步 benchmark：
+
+```bash
+# 先做 256 条中等规模评测，不急着跑全量 1319
+# 对照组：base_7b, prm_filtered_sft, grpo_cfg3
+# 可选备选：grpo_cfg4
+```
+
+### RL 会话启动（推荐）
+
+```bash
+cd ~/autodl-tmp/process_supervised_rl
+git checkout main
+git pull --ff-only origin main
+
+# 检查关键产物
+ls logs/prm_v2/sweep_1000x4_v2/best.json
+ls logs/sft/prm_filtered_lora_1000x4/final/adapter_model.safetensors
+ls data/prm/gsm8k_train_1000_prm_preferences_deepseek_v4_flash.jsonl
+```
+
+### 历史命令（step3）
+
+下面这组命令对应 `step3` 继续推进 PRM 前的环境确认和数据检查。
 
 ### 1. 进入远端仓库
 
