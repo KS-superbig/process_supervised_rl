@@ -307,6 +307,14 @@ cd ~/autodl-tmp/process_supervised_rl
 
 注意：AutoDL 登录提示里明确说明 `/root/autodl-tmp` 是数据盘，通常不会随“保存镜像”一起保存。也就是说，只给组员一个系统镜像大概率不够；需要同时共享上面这些数据盘 artifact，或者让组员直接使用同一台实例/同一块数据盘。
 
+已在系统盘打好精简交接包：
+
+```bash
+/root/psrl_benchmark_handoff_20260510.tar.gz
+```
+
+该包不包含 base 7B 模型；组员可自行下载 base 模型，再使用包内的 SFT/GRPO adapters 做 benchmark。
+
 建议下一步 benchmark：
 
 ```bash
