@@ -21,6 +21,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--min-prm-score", type=float, default=None)
     parser.add_argument("--min-text-chars", type=int, default=40)
     parser.add_argument("--min-space-ratio", type=float, default=0.04)
+    parser.add_argument("--strict-format", action="store_true", help="Use SFT v3 strict formatting gates.")
     parser.add_argument("--allow-final-wrong", action="store_true")
     parser.add_argument("--allow-run-on", action="store_true")
     return parser
@@ -36,6 +37,7 @@ def main() -> None:
         min_text_chars=args.min_text_chars,
         min_space_ratio=args.min_space_ratio,
         reject_run_on=not args.allow_run_on,
+        strict_format=args.strict_format,
     )
     written = write_jsonl(rows, args.output)
     stats["written_rows"] = written
