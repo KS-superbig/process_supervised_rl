@@ -49,7 +49,8 @@ def mask_user_tokens(input_ids: list[int], assistant_start: int) -> list[int]:
 
 def format_example(tokenizer, messages: list[dict], max_length: int) -> dict:
     user_messages = [messages[0]]
-    full_text = _apply_chat_template(tokenizer, messages, add_generation_prompt=False)
+    full_messages = _messages_with_trainable_space_markers(tokenizer, messages)
+    full_text = _apply_chat_template(tokenizer, full_messages, add_generation_prompt=False)
     prefix_text = _apply_chat_template(tokenizer, user_messages, add_generation_prompt=True)
 
     full_ids = tokenizer(full_text, truncation=True, max_length=max_length, padding=False)["input_ids"]
@@ -60,6 +61,37 @@ def format_example(tokenizer, messages: list[dict], max_length: int) -> dict:
         "attention_mask": [1] * len(full_ids),
         "labels": mask_user_tokens(full_ids, assistant_start),
     }
+
+
+def _messages_with_trainable_space_markers(tokenizer, messages: list[dict]) -> list[dict]:
+    if not _tokenizer_drops_ascii_spaces(tokenizer):
+        return messages
+    marked = []
+    for message in messages:
+        if message.get("role") != "assistant":
+            marked.append(message)
+            continue
+        marked.append({**message, "content": _mark_spaces(str(message.get("content", "")))})
+    return marked
+
+
+def _tokenizer_drops_ascii_spaces(tokenizer) -> bool:
+    if getattr(tokenizer, "_psrl_drops_ascii_spaces", None) is not None:
+        return bool(tokenizer._psrl_drops_ascii_spaces)
+    marker_id = None
+    if hasattr(tokenizer, "convert_tokens_to_ids"):
+        marker_id = tokenizer.convert_tokens_to_ids("Ġ")
+    if marker_id is None:
+        tokenizer._psrl_drops_ascii_spaces = False
+        return False
+    encoded = tokenizer("A B", truncation=True, max_length=16, padding=False)["input_ids"]
+    decoded = tokenizer.decode(encoded, skip_special_tokens=False)
+    tokenizer._psrl_drops_ascii_spaces = " " not in decoded and "Ġ" not in decoded
+    return bool(tokenizer._psrl_drops_ascii_spaces)
+
+
+def _mark_spaces(text: str) -> str:
+    return str(text).replace(" ", "Ġ")
 
 
 def _apply_chat_template(tokenizer, messages: list[dict], *, add_generation_prompt: bool) -> str:
