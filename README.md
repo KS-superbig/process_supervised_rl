@@ -11,18 +11,18 @@
 ## 当前状态
 
 - 当前总阶段：第一阶段
-- 当前 step：`step3` 收官，进入 `RL 对齐/benchmark`
+- 当前 step：`step3` 收官，进入 `SFT v3 / GRPO / reward source 诊断`
 - 当前 step 文档：[README_process_supervised_rl_step3.md](README_process_supervised_rl_step3.md)
 - 上一 step 归档文档：[README_process_supervised_rl_step2.md](README_process_supervised_rl_step2.md)
-- 当前完成度：`1k×4` 数据闭环、PRM v2 大规模调参、PRM 筛选后 LoRA-SFT、GRPO 小网格训练与 `64` 条快速 benchmark 已完成；下一步做中等规模/全量 benchmark 与 changed-case 抽查
+- 当前完成度：`1k×4` 数据闭环、PRM v2 大规模调参、PRM-filtered SFT、SFT v3 spacefix、基于 SFT v3 的 GRPO cfg3、`256` 条 benchmark、外部 Qwen Math PRM 离线诊断均已完成；下一步重点是选择 reward source 路线，而不是盲目继续跑 GRPO
 
 ## 当前目标
 
 - 使用 `GSM8K` 跑通最小实验闭环
 - 对比 `final-only`、`final+LLM-judge`、`final+PRM`、`PRM-filtered SFT` 的候选轨迹选择效果
 - 默认采用“本地开发，远端执行”的工作流
-- 当前主线：用强 LLM API judge 生成过程偏好数据，训练 PRM，再进入 RL（GRPO）对齐
-- 当前下一步：交接 benchmark，对 `PRM-filtered SFT` 与最佳 GRPO adapter 做更大样本评测，并判断是否继续调 GRPO 或扩大 PRM 数据
+- 当前主线：先固定强 SFT baseline，再研究 RL 阶段到底应该使用什么 reward source
+- 当前下一步：围绕 `SFT v3 spacefix` 做 reward 诊断和小规模 GRPO 对照；暂不建议直接把外部 PRM/RM 高权重接入训练
 
 ## 当前数据集
 
@@ -32,6 +32,241 @@
 - 本阶段候选生成规模：`1000 questions × 4 candidates = 4000 trajectories`
 
 说明：当前主线没有切到其它“高级 PMK 数据集”；你现在用的还是 `GSM8K` + 本地 7B 生成轨迹 + LLM judge 标注。
+
+## 2026-05-17 最新进展
+
+这一轮工作的重点从“GRPO 是否能跑起来”切换到了“reward source 是否真的提供新增信息”。
+
+### 1. SFT 数据格式问题已定位并修复
+
+旧版 PRM-filtered SFT 有一个关键数据问题：DeepSeek tokenizer 在训练标签里会吞掉普通 ASCII 空格，导致模型学到类似下面的无空格输出：
+
+```text
+Arobetakes2boltsofbluefiberandhalfthatmuchwhitefiber...
+```
+
+这个问题的后果是：
+
+- SFT 虽然提升了最终答案正确率，但会污染输出格式；
+- GRPO 可能继续强化这种坏格式；
+- 过程 reward / PRM 对这种格式异常的判断也会被干扰。
+
+修复方式：在 `scripts/train_sft_lora_chat.py` 中检测 tokenizer 是否会丢 ASCII space，并在支持 DeepSeek space marker `Ġ` 时把 assistant target 的普通空格替换为 `Ġ` 后再套 chat template。
+
+当前最佳 SFT baseline：
+
+```text
+logs/sft/prm_filtered_lora_1000x4_v3_strict_chat_spacefix/final
+```
+
+对应 `256` 条 GSM8K test benchmark：
+
+```text
+SFT v3 spacefix: 187/256 = 0.7305
+avg_generated_tokens = 155.99
+truncated_rate = 0.0430
+mean_spaces = 84.16
+```
+
+### 2. 基于 SFT v3 的 GRPO cfg3 已产生小幅正增益
+
+使用旧 `cfg3` 风格参数，从最新 `SFT v3 spacefix` adapter 初始化，跑 `100` step GRPO：
+
+```text
+lr = 2e-6
+beta = 0.1
+prm_weight = 0.2
+final_weight = 1.0
+max_completion_length = 384
+limit = 512
+num_generations = 4
+```
+
+训练产物：
+
+```text
+logs/rl/grpo_v3spacefix_cfg3_20260516/final
+```
+
+训练诊断确认 LoRA 参数确实更新并正确保存：
+
+```text
+any_changed_in_memory_after_train = true
+all_saved_match_post_train_memory = true
+```
+
+`256` 条 benchmark：
+
+```text
+GRPO v3 cfg3: 190/256 = 0.7422
+avg_generated_tokens = 157.52
+truncated_rate = 0.0469
+mean_spaces = 85.77
+```
+
+当前主要分数对照：
+
+```text
+base 7B:              150/256 = 0.5859
+old PRM-filtered SFT: 166/256 = 0.6484
+clean_chat SFT v2:    175/256 = 0.6836
+SFT v3 spacefix:      187/256 = 0.7305
+GRPO v3 cfg3:         190/256 = 0.7422
+```
+
+结论：修复 SFT target 空格问题后，GRPO 不再像旧版本那样明显拉坏 SFT；但 `+3/256` 的收益很小，说明当前 reward signal 的边际信息有限。
+
+### 3. 外部 Qwen Math PRM 已做离线诊断
+
+已在远端下载并验证：
+
+```text
+/root/autodl-tmp/models/Qwen2.5-Math-PRM-7B
+```
+
+新增离线评估脚本：
+
+```text
+scripts/evaluate_qwen_prm_benchmark.py
+```
+
+该脚本按 Qwen PRM 的用法，在每个 step 后插入 `<extra_0>`，取 positive probability 作为 step reward，并输出 mean/min/last step score。
+
+远端评估输出：
+
+```text
+logs/qwen_prm_eval_256_20260517/summary.json
+logs/qwen_prm_eval_256_20260517/sft_v3.qwen_prm_scores.jsonl
+logs/qwen_prm_eval_256_20260517/grpo_v3_cfg3.qwen_prm_scores.jsonl
+```
+
+离线诊断结果：
+
+```text
+SFT v3:
+correct mean PRM = 0.2043
+wrong mean PRM   = 0.1999
+gap              = +0.0044
+
+GRPO v3 cfg3:
+correct mean PRM = 0.2044
+wrong mean PRM   = 0.1977
+gap              = +0.0067
+```
+
+AUC-like 排序能力：
+
+```text
+SFT v3:
+mean score AUC ~= 0.532
+min score AUC  ~= 0.585
+last score AUC ~= 0.581
+
+GRPO v3 cfg3:
+mean score AUC ~= 0.556
+min score AUC  ~= 0.595
+last score AUC ~= 0.590
+```
+
+结论：Qwen PRM 对正确/错误有弱正相关，`min` 和 `last` step score 比 `mean` 更有用，但整体信号偏弱，不适合作为高权重 RL reward 直接接入。
+
+更重要的是，在 `SFT 错 -> GRPO 对` 的 `8` 个样本里，Qwen PRM 反而给 GRPO 输出更低分。这说明它不一定奖励这次 GRPO 真正带来的收益样本，直接使用存在和 final-answer reward 打架的风险。
+
+## 当前路线困境
+
+目前最核心的问题不是工程链路，而是 reward source 的选择。
+
+### 已有 PRM 到底是什么
+
+仓库里已有的 PRM v2 不是 LLM，也不是纯脚本规则判断器。它是一个轻量神经 reward model：
+
+```text
+question + candidate trajectory
+-> feature/vectorizer
+-> pairwise MLP
+-> scalar score
+```
+
+它通过 preference pairs 训练，让 chosen candidate 的分数高于 rejected candidate。它的优点是快、便宜、容易接入；缺点是表达能力有限，更容易学到表面统计特征，而不是真正理解复杂数学推理。
+
+当前 PRM v2 适合做：
+
+- 候选筛选；
+- 明显坏样本过滤；
+- reranking / reward smoke test；
+- 低成本过程偏好 baseline。
+
+但它未必适合作为强 RL reward 的唯一来源。
+
+### 为什么 RL 的提升不明显
+
+当前链路里，PRM 已经先用于 SFT 数据筛选：
+
+```text
+候选轨迹
+-> PRM 打分/筛选
+-> SFT 学习 PRM 喜欢的轨迹
+-> GRPO 再用同一个 PRM 做辅助 reward
+```
+
+这会造成一个天然问题：SFT 阶段已经吸收了很多 PRM 偏好，RL 阶段再用同一个 PRM，新增信息很有限。因此即使 GRPO 训练正确、LoRA 参数确实更新，也可能只得到小幅提升。
+
+当前结果正符合这个判断：
+
+```text
+SFT v3 spacefix: 187/256
+GRPO v3 cfg3:    190/256
+```
+
+方向是正的，但边际收益很小。
+
+### 如果增强 PRM，为什么不能继续同时用于 SFT 和 RL
+
+如果训练一个更强 PRM v3，然后继续用它做：
+
+```text
+PRM v3 筛 SFT 数据
+PRM v3 再做 RL reward
+```
+
+那么 RL 阶段仍会遇到同样的问题：PRM 的偏好在 SFT 阶段已经被 policy 学掉一大部分，RL 的优势会被压缩。
+
+因此后续更合理的设计是分离职责：
+
+```text
+SFT 阶段：
+主要用 final answer correctness + format cleanliness + length/truncation 规则做干净数据。
+PRM 可以辅助，但不要作为唯一筛选标准。
+
+RL 阶段：
+使用独立或增强后的 PRM/RM/verifier 作为过程 reward。
+```
+
+换句话说，SFT 负责把模型拉到“会做题、格式干净”的区域；RL 负责用额外 reward source 做偏好优化。不要让同一个 PRM 在 SFT 阶段就把所有偏好提前灌满。
+
+### 当前可选路线
+
+当前有三条可选路线：
+
+1. **保守 RL 超参路线**
+
+   固定 `SFT v3 spacefix`，继续围绕当前正向 `cfg3` 做小网格，例如调整 `beta`、`lr`、`prm_weight`、`num_generations`。这条路线工程风险最低，但天花板可能有限。
+
+2. **增强自研 PRM 路线**
+
+   生成更多候选，例如 `1000~3000` 题、每题 `8/16` 条；用 final correctness、格式、长度、截断和强 LLM judge 构造更高质量 pairwise 数据，训练 PRM v3。关键要求是：PRM v3 先在固定 benchmark 输出上证明能区分 correct/wrong，并能奖励 `SFT 错 -> GRPO 对` 的样本，再接入 RL。
+
+3. **外部 RM/PRM 辅助路线**
+
+   继续尝试 Qwen/Skywork/Eurus 等外部 RM，但不要直接高权重接入。必须先做离线相关性诊断。如果信号像当前 Qwen PRM 一样弱，只能作为很小权重的辅助项，例如：
+
+   ```text
+   reward = 1.0 * final_answer_correct
+          + 0.05~0.1 * external_prm_min_or_last
+          - truncation_penalty
+   ```
+
+当前推荐：不要马上大规模重训或大规模 GRPO。先把 `SFT v3 spacefix` 固定为 anchor，用同一批 `256` 条 benchmark 输出评估不同 reward source 的方向性，再决定下一次训练预算投在哪里。
 
 ## 文档分工
 
@@ -84,11 +319,11 @@
 
 当前默认优先顺序：
 
-1. 固化当前 `PRM + SFT + GRPO grid` 产物版本
-2. 由 benchmark 负责人按同一 decode config 评测 `base 7B` / `PRM-filtered-SFT` / `GRPO` adapters
-3. 优先对 `cfg3` 做中等规模评测（建议先 `256` 条，不急着全量 `1319`）
-4. 做 changed-case 抽查，确认没有 reward hacking
-5. 如果 GRPO 仍无法超过 SFT，再决定是继续调 RL 超参，还是扩大 PRM 数据重训
+1. 固定 `SFT v3 spacefix` 作为当前强 baseline，不再回到旧的 no-space SFT 产物。
+2. 固定 `GRPO v3 cfg3` 作为当前唯一正向 RL baseline，后续所有 RL 对照都从这里的参数附近开始。
+3. 不直接把外部 Qwen PRM 高权重接进 GRPO；先继续做 reward source 离线诊断。
+4. 如果要增强 PRM，优先把它定位成 RL reward/verifier，而不是再次完全主导 SFT 数据筛选。
+5. 下一次训练预算优先用于小规模对照：`final_answer` 主 reward + 小权重外部 PRM/RM 或增强 PRM，而不是盲目扩大 step 数。
 
 ## 当前已完成
 
@@ -137,7 +372,15 @@
   - `grpo_cfg2`: `31/64 = 0.4844`
   - `grpo_cfg3`: `36/64 = 0.5625`
   - `grpo_cfg4`: `35/64 = 0.5469`
-- 当前快速结论：`cfg3` 追平 SFT，尚未证明超过 SFT；建议先做 `256` 条中等规模 benchmark，再决定是否跑全量 `1319`
+- 已定位并修复 SFT label 空格问题，确认 DeepSeek tokenizer 需要使用 space marker `Ġ` 保留 assistant target 空格
+- 已构建严格格式过滤后的 SFT v3 clean chat 数据，并训练 `SFT v3 spacefix` adapter
+- 已完成 `SFT v3 spacefix` 的 `256` 条 benchmark：`187/256 = 0.7305`
+- 已基于 `SFT v3 spacefix` 跑通 `GRPO v3 cfg3`，确认 LoRA 参数更新和 adapter 保存正确
+- 已完成 `GRPO v3 cfg3` 的 `256` 条 benchmark：`190/256 = 0.7422`
+- 已下载并离线验证 `Qwen/Qwen2.5-Math-PRM-7B`
+- 已新增 `scripts/evaluate_qwen_prm_benchmark.py`，可对已有 benchmark 输出做外部 PRM step reward 诊断
+- 已完成 Qwen PRM 对 `SFT v3` / `GRPO v3 cfg3` 的 `256` 条离线诊断，结论是有弱正相关但信号不够强，不建议高权重直接接入 RL
+- 当前快速结论：SFT v3 修复带来主要收益，GRPO v3 cfg3 有小幅正增益；后续瓶颈转向 reward source 的独立性和判别力
 
 这说明当前工程已经具备：
 
@@ -201,6 +444,7 @@
 - 候选轨迹 reranking 分析脚本
 - LLM judge prompt / JSON parsing / DeepSeek API 调用脚本
 - PRM preference dataset 构造脚本
+- 外部 Qwen Math PRM 对 benchmark generations 的离线评分脚本
 
 ## 当前方法判断
 
