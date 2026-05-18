@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 from psrl.candidates import extract_candidate_final
 from psrl.reward.final_reward import compute_final_reward
+from psrl.reward.python_verifier import python_verifier_reward
 
 
 @dataclass(frozen=True)
@@ -13,12 +14,17 @@ class RewardConfig:
     prm_mean: float = 0.0
     prm_std: float = 1.0
     prm_clip: float = 3.0
+    python_verifier_weight: float = 0.0
+    python_verifier_alpha_step: float = 0.3
+    python_verifier_beta_pass_rate: float = 0.2
+    python_verifier_gamma_no_eq_penalty: float = 0.0
 
 
 @dataclass(frozen=True)
 class RewardBreakdown:
     final_reward: float
     prm_reward: float
+    python_verifier_reward: float
     total_reward: float
 
 
@@ -47,9 +53,22 @@ def build_reward_breakdown(
         std=config.prm_std,
         clip=config.prm_clip,
     )
-    total_reward = config.final_weight * final_reward + config.prm_weight * prm_reward
+    verifier = python_verifier_reward(
+        completion_text,
+        bool(final_reward),
+        alpha_step=config.python_verifier_alpha_step,
+        beta_pass_rate=config.python_verifier_beta_pass_rate,
+        gamma_no_eq_penalty=config.python_verifier_gamma_no_eq_penalty,
+    )
+    verifier_reward = float(verifier["reward"] - verifier["r_final"])
+    total_reward = (
+        config.final_weight * final_reward
+        + config.prm_weight * prm_reward
+        + config.python_verifier_weight * verifier_reward
+    )
     return RewardBreakdown(
         final_reward=float(final_reward),
         prm_reward=float(prm_reward),
+        python_verifier_reward=float(verifier_reward),
         total_reward=float(total_reward),
     )

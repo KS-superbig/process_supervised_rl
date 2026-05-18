@@ -36,6 +36,7 @@ def test_train_grpo_smoke_parser_defaults_to_rl_smoke_paths():
     assert args.limit == 512
     assert args.final_weight == 1.0
     assert args.prm_weight == 0.2
+    assert args.python_verifier_weight == 0.0
 
 
 def test_train_grpo_smoke_parser_accepts_reward_and_generation_controls():
@@ -63,6 +64,12 @@ def test_train_grpo_smoke_parser_accepts_reward_and_generation_controls():
             "0.35",
             "--prm-clip",
             "2.5",
+            "--python-verifier-weight",
+            "0.4",
+            "--python-verifier-alpha-step",
+            "0.25",
+            "--python-verifier-beta-pass-rate",
+            "0.15",
         ]
     )
 
@@ -72,6 +79,9 @@ def test_train_grpo_smoke_parser_accepts_reward_and_generation_controls():
     assert args.max_completion_length == 128
     assert args.prm_weight == 0.35
     assert args.prm_clip == 2.5
+    assert args.python_verifier_weight == 0.4
+    assert args.python_verifier_alpha_step == 0.25
+    assert args.python_verifier_beta_pass_rate == 0.15
 
 
 def test_load_train_rows_keeps_raw_question_for_prm_reward(tmp_path):

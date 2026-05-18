@@ -31,6 +31,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--final-weight", type=float, default=1.0)
     parser.add_argument("--prm-weight", type=float, default=0.2)
     parser.add_argument("--prm-clip", type=float, default=3.0)
+    parser.add_argument("--python-verifier-weight", type=float, default=0.0)
+    parser.add_argument("--python-verifier-alpha-step", type=float, default=0.3)
+    parser.add_argument("--python-verifier-beta-pass-rate", type=float, default=0.2)
+    parser.add_argument("--python-verifier-gamma-no-eq-penalty", type=float, default=0.0)
     parser.add_argument("--num-generations", type=int, default=4)
     parser.add_argument("--max-prompt-length", type=int, default=512)
     parser.add_argument("--max-completion-length", type=int, default=256)
@@ -69,6 +73,10 @@ def main() -> None:
         prm_mean=prm_mean,
         prm_std=prm_std,
         prm_clip=args.prm_clip,
+        python_verifier_weight=args.python_verifier_weight,
+        python_verifier_alpha_step=args.python_verifier_alpha_step,
+        python_verifier_beta_pass_rate=args.python_verifier_beta_pass_rate,
+        python_verifier_gamma_no_eq_penalty=args.python_verifier_gamma_no_eq_penalty,
     )
 
     tokenizer = AutoTokenizer.from_pretrained(args.model_name, trust_remote_code=True)
@@ -364,12 +372,16 @@ def _write_run_manifest(args: argparse.Namespace, config: RewardConfig, num_rows
         "prm_calibration": str(args.prm_calibration) if args.prm_calibration else None,
         "num_rows": num_rows,
         "reward": {
-            "version": "final_plus_prm_zscore_v1",
+            "version": "final_plus_prm_zscore_plus_optional_python_verifier_v1",
             "final_weight": config.final_weight,
             "prm_weight": config.prm_weight,
             "prm_mean": config.prm_mean,
             "prm_std": config.prm_std,
             "prm_clip": config.prm_clip,
+            "python_verifier_weight": config.python_verifier_weight,
+            "python_verifier_alpha_step": config.python_verifier_alpha_step,
+            "python_verifier_beta_pass_rate": config.python_verifier_beta_pass_rate,
+            "python_verifier_gamma_no_eq_penalty": config.python_verifier_gamma_no_eq_penalty,
         },
         "training": {
             "max_steps": args.max_steps,

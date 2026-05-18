@@ -38,3 +38,24 @@ def test_build_reward_breakdown_penalizes_wrong_final_answer_but_keeps_prm_compo
     assert breakdown.final_reward == 0.0
     assert breakdown.prm_reward == 0.5
     assert breakdown.total_reward == 0.1
+
+
+def test_build_reward_breakdown_can_include_python_verifier_component():
+    config = RewardConfig(
+        final_weight=1.0,
+        prm_weight=0.0,
+        python_verifier_weight=1.0,
+        python_verifier_alpha_step=0.3,
+        python_verifier_beta_pass_rate=0.2,
+    )
+
+    breakdown = build_reward_breakdown(
+        gold_final="13",
+        completion_text="16 - 3 = 13. The final answer is 13.",
+        raw_prm_score=0.0,
+        config=config,
+    )
+
+    assert breakdown.final_reward == 1.0
+    assert breakdown.python_verifier_reward == 0.5
+    assert breakdown.total_reward == 1.5
