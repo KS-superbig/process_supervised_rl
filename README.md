@@ -1,76 +1,76 @@
-# Process-Supervised RL on GSM8K
+# GSM8K 过程监督强化学习实验
 
-This repository is a compact experimental pipeline for process-supervised reasoning on `GSM8K`.
+这个仓库是一个面向 `GSM8K` 的过程监督推理实验仓库，目标是把核心流程和核心训练代码讲清楚，而不是保留所有探索期的细枝末节。
 
-The current goal is not to keep scaling GRPO blindly. The current goal is to keep a strong SFT anchor, diagnose which reward sources add new signal, and then use the useful reward signal in GRPO.
+当前重点不是盲目继续扩大 GRPO，而是先固定一个强 SFT anchor，诊断哪些 reward source 真正提供新增信息，再把有效 reward 接入 GRPO。
 
-## Current Status
+## 当前状态
 
-- Stage: phase 1, after `step3`
-- Dataset: `GSM8K`
-- Current policy anchor: `SFT v3 spacefix`
-- Current RL baseline: `GRPO v3 cfg3`
-- Current engineering focus: Python verifier step reward, DAPO Clip-Higher GRPO, and reward-source diagnostics
-- Execution workflow: code is committed locally/GitHub; data, model artifacts, and long runs live on the remote machine
+- 当前阶段：第一阶段，`step3` 之后
+- 当前数据集：`GSM8K`
+- 当前 policy anchor：`SFT v3 spacefix`
+- 当前 RL baseline：`GRPO v3 cfg3`
+- 当前工程重点：Python verifier step reward、DAPO Clip-Higher GRPO、reward source 诊断
+- 当前工作流：代码保存在本地/GitHub；数据、模型产物、长时间训练放在远端机器
 
-Key benchmark snapshot on the fixed 256-sample GSM8K test subset:
+固定 `256` 条 GSM8K test 子集上的主要结果：
 
-| Model | Accuracy |
+| 模型 | 准确率 |
 | --- | ---: |
 | Base 7B | `150/256 = 0.5859` |
-| Old PRM-filtered SFT | `166/256 = 0.6484` |
-| Clean chat SFT v2 | `175/256 = 0.6836` |
+| old PRM-filtered SFT | `166/256 = 0.6484` |
+| clean chat SFT v2 | `175/256 = 0.6836` |
 | SFT v3 spacefix | `187/256 = 0.7305` |
 | GRPO v3 cfg3 | `190/256 = 0.7422` |
 
-The small GRPO gain suggests that the previous PRM reward source has limited marginal information after PRM-filtered SFT. The next experiments focus on whether a step-level Python verifier or a stronger PPM/RM provides a better RL reward signal.
+当前 GRPO 只有小幅提升，说明旧 PRM reward 在 PRM-filtered SFT 之后的边际信息有限。下一步重点是验证 Python verifier 这种 step-level reward，或者更强的 PPM/RM，是否能提供更好的 RL reward signal。
 
-## Core Pipeline
+## 核心流程
 
-Read the current reproducible pipeline first:
+新合作者建议先看当前复现流程：
 
 - [docs/repro/current_pipeline.md](docs/repro/current_pipeline.md)
 
-Main flow:
+主线流程：
 
-1. Prepare GSM8K JSONL files.
-2. Generate multiple candidate trajectories per question.
-3. Judge/rank candidates with final correctness and optional LLM judge.
-4. Build preference data for PRM/RM diagnostics.
-5. Train clean SFT LoRA from filtered trajectories.
-6. Run GRPO from the SFT adapter.
-7. Diagnose reward sources before giving them high training weight.
+1. 准备 GSM8K JSONL 数据。
+2. 为每道题生成多条候选推理轨迹。
+3. 用 final correctness 和可选 LLM judge 对候选排序/打标。
+4. 构造 PRM/RM 诊断用 preference 数据。
+5. 从过滤后的候选轨迹训练干净的 SFT LoRA。
+6. 从 SFT adapter 初始化并运行 GRPO。
+7. 在高权重接入训练前，先离线诊断 reward source 是否真的有效。
 
-## Important Code Paths
+## 关键代码路径
 
-| Area | Path |
+| 模块 | 路径 |
 | --- | --- |
-| GSM8K preprocessing | `scripts/prepare_gsm8k.py`, `src/psrl/data/` |
-| Candidate generation | `scripts/generate_candidates.py`, `src/psrl/candidates.py` |
-| LLM judge preferences | `scripts/judge_candidates_with_llm.py`, `scripts/build_prm_dataset.py` |
-| SFT data filtering | `scripts/build_prm_filtered_sft_data.py`, `src/psrl/sft_data.py` |
-| SFT LoRA training | `scripts/train_sft_lora_chat.py` |
-| GRPO training | `scripts/train_grpo_smoke.py`, `src/psrl/rl/` |
+| GSM8K 预处理 | `scripts/prepare_gsm8k.py`, `src/psrl/data/` |
+| 候选生成 | `scripts/generate_candidates.py`, `src/psrl/candidates.py` |
+| LLM judge preference | `scripts/judge_candidates_with_llm.py`, `scripts/build_prm_dataset.py` |
+| SFT 数据过滤 | `scripts/build_prm_filtered_sft_data.py`, `src/psrl/sft_data.py` |
+| SFT LoRA 训练 | `scripts/train_sft_lora_chat.py` |
+| GRPO 训练 | `scripts/train_grpo_smoke.py`, `src/psrl/rl/` |
 | DAPO Clip-Higher adapter | `src/psrl/rl/dapo_grpo_trainer.py` |
-| GRPO reward composition | `src/psrl/rl/grpo_rewards.py` |
+| GRPO reward 组合 | `src/psrl/rl/grpo_rewards.py` |
 | Python verifier reward | `src/psrl/reward/python_verifier.py`, `scripts/diagnose_python_verifier.py` |
-| External Qwen PRM diagnostic | `scripts/evaluate_qwen_prm_benchmark.py` |
+| 外部 Qwen PRM 诊断 | `scripts/evaluate_qwen_prm_benchmark.py` |
 | MLP PRM v2 | `scripts/train_prm_v2.py`, `src/psrl/prm_v2.py` |
 
-## Current Reward Direction
+## 当前 reward 路线
 
-The current recommended sequence is:
+推荐顺序：
 
-1. Diagnose the Python verifier reward offline on fixed SFT/GRPO benchmark outputs.
-2. If the verifier creates a clear correct-vs-wrong gap and useful within-question ranking, connect it to GRPO with conservative weight.
-3. If this works, train a stronger process preference model, likely using PRM800K-style step labels instead of spending extra effort recreating step labels from scratch.
-4. Keep external RM/PRM models as offline diagnostics unless they prove strong alignment with final-answer improvements.
+1. 在固定 SFT/GRPO benchmark 输出上离线诊断 Python verifier reward。
+2. 如果 verifier 在 correct/wrong 之间有明显 gap，并且能在同题多候选里区分好坏，再用保守权重接入 GRPO。
+3. 如果这条路线 work，再训练更强的 process preference model，优先考虑直接使用 PRM800K 这类 step label 数据，避免重复造 step label。
+4. 外部 RM/PRM 先作为离线诊断工具。只有当它和 final-answer improvement 明显一致时，才考虑接入训练。
 
-Avoid using the same PRM as both the main SFT filter and the main RL reward without checking marginal signal. That design can make RL gains look small because SFT has already absorbed the PRM preference.
+注意：不要在没有诊断边际信息的情况下，让同一个 PRM 同时承担 SFT 主过滤器和 RL 主 reward。这样 SFT 阶段可能已经吸收了大部分 PRM 偏好，导致 RL 阶段提升很小。
 
 ## GRPO Clip-Higher
 
-The project now exposes DAPO-style non-symmetric clipping through the training script:
+训练脚本已经暴露 DAPO 风格的非对称 clipping：
 
 ```bash
 python scripts/train_grpo_smoke.py \
@@ -78,27 +78,27 @@ python scripts/train_grpo_smoke.py \
   --epsilon-high 0.28
 ```
 
-Backward compatibility is preserved:
+兼容旧的对称 clip 写法：
 
 ```bash
 python scripts/train_grpo_smoke.py --epsilon 0.2
 ```
 
-The actual installed TRL loss implementation lives in the remote Python environment, but this repository owns the adapter layer in `src/psrl/rl/dapo_grpo_trainer.py`. Future GRPO loss overrides should go there instead of editing `site-packages`.
+真正的 TRL loss 实现在远端 Python 环境的安装包里；但本仓库已经拥有自己的 adapter 层：`src/psrl/rl/dapo_grpo_trainer.py`。后续如果要 override GRPO loss、clip、token-level mask 或日志指标，优先在这个文件里接管，不要直接改远端 `site-packages`。
 
-## Historical Notes
+## 历史文档
 
-Long-form step documents are archived under `docs/history/`:
+探索期长文档已经归档到 `docs/history/`：
 
 - [step1 bootstrap](docs/history/README_process_supervised_rl_step1.md)
 - [step2 process reward baseline](docs/history/README_process_supervised_rl_step2.md)
 - [step3 PRM/SFT/GRPO diagnostics](docs/history/README_process_supervised_rl_step3.md)
 
-These files preserve the experiment history. New contributors should start from this README and `docs/repro/current_pipeline.md`, not from the archived notes.
+这些文档用于保留实验历史。新合作者应优先阅读当前 `README.md` 和 [docs/repro/current_pipeline.md](docs/repro/current_pipeline.md)，不要从历史长文开始。
 
-## Repository Hygiene
+## 仓库卫生规则
 
-- Keep code, configs, tests, and small Markdown summaries in Git.
-- Keep large data, model checkpoints, adapter outputs, and full JSONL logs outside Git.
-- Use the remote machine for GPU training and benchmark execution.
-- Use local/GitHub as the source of truth for code.
+- Git 中保留：代码、配置、测试、小型 Markdown summary。
+- Git 中不保留：大数据、模型 checkpoint、LoRA adapter、完整 JSONL 日志。
+- 远端机器用于 GPU 训练和 benchmark 执行。
+- 本地/GitHub 是代码源，远端只同步代码并执行实验。

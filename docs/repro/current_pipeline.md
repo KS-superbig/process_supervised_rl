@@ -1,17 +1,17 @@
-# Current Pipeline
+# 当前复现流程
 
-This document is the short reproducibility guide for the active GSM8K process-supervised RL pipeline.
+这个文档是当前 `GSM8K` 过程监督 RL 主线的短版复现说明。它只覆盖当前仍然重要的流程，不试图复述所有历史实验。
 
-## 1. Data
+## 1. 数据准备
 
-Expected processed files:
+预期的处理后数据文件：
 
 ```text
 data/processed/gsm8k_train.jsonl
 data/processed/gsm8k_test.jsonl
 ```
 
-Build them from raw GSM8K JSONL files with:
+从原始 GSM8K JSONL 构建：
 
 ```bash
 python scripts/prepare_gsm8k.py \
@@ -25,9 +25,9 @@ python scripts/prepare_gsm8k.py \
   --split test
 ```
 
-## 2. Candidate Generation
+## 2. 候选轨迹生成
 
-Generate multiple trajectories per question:
+为每道题生成多条候选推理轨迹：
 
 ```bash
 python scripts/generate_candidates.py \
@@ -36,11 +36,11 @@ python scripts/generate_candidates.py \
   --num-candidates 4
 ```
 
-For the current stage, candidate files and full logs should live on the remote machine and should not be committed to Git.
+当前阶段，候选文件和完整日志应放在远端机器，不提交到 Git。
 
-## 3. Preference Construction
+## 3. preference 构造
 
-Use final-answer correctness and optional LLM judge ranking to construct preferences:
+使用 final-answer correctness 和可选 LLM judge 排名构造 preference 数据：
 
 ```bash
 python scripts/judge_candidates_with_llm.py \
@@ -53,9 +53,9 @@ python scripts/build_prm_dataset.py \
   --output data/prm/gsm8k_train_prm_preferences.jsonl
 ```
 
-## 4. PRM v2 Diagnostics
+## 4. PRM v2 诊断
 
-The current in-repo PRM baseline is the MLP pairwise model:
+当前仓库内的 PRM baseline 是 MLP pairwise model：
 
 ```bash
 python scripts/train_prm_v2.py \
@@ -64,11 +64,11 @@ python scripts/train_prm_v2.py \
   --output-dir logs/prm_v2/run
 ```
 
-Use PRM v2 mainly for candidate filtering, reranking, and reward smoke tests. Do not assume it is a strong standalone RL reward without offline correlation checks.
+PRM v2 主要用于候选过滤、reranking 和 reward smoke test。不要在没有离线相关性诊断的情况下，把它当成强 RL reward。
 
 ## 5. SFT
 
-Build filtered SFT rows, then train the chat LoRA adapter:
+先构建过滤后的 SFT 数据，再训练 chat LoRA adapter：
 
 ```bash
 python scripts/build_prm_filtered_sft_data.py \
@@ -83,11 +83,11 @@ python scripts/train_sft_lora_chat.py \
   --output-dir logs/sft/prm_filtered_lora
 ```
 
-The current best SFT anchor is the `SFT v3 spacefix` adapter. The important fix is preserving assistant target spaces for DeepSeek-style tokenizers that otherwise drop normal ASCII spaces in labels.
+当前最佳 SFT anchor 是 `SFT v3 spacefix` adapter。关键修复是：对会吞普通 ASCII 空格的 DeepSeek tokenizer，在 assistant target 中保留可训练的 space marker，避免模型学出无空格输出。
 
 ## 6. GRPO
 
-Run GRPO from the SFT adapter:
+从 SFT adapter 初始化并运行 GRPO：
 
 ```bash
 python scripts/train_grpo_smoke.py \
@@ -100,23 +100,23 @@ python scripts/train_grpo_smoke.py \
   --epsilon-high 0.28
 ```
 
-`--epsilon-low` and `--epsilon-high` expose DAPO Clip-Higher. Passing legacy `--epsilon` keeps symmetric clipping.
+`--epsilon-low` 和 `--epsilon-high` 暴露 DAPO Clip-Higher。传入旧参数 `--epsilon` 时，会退化为对称 clipping。
 
-Project-owned GRPO extension point:
+项目内 GRPO 扩展入口：
 
 ```text
 src/psrl/rl/dapo_grpo_trainer.py
 ```
 
-Reward composition:
+reward 组合逻辑：
 
 ```text
 src/psrl/rl/grpo_rewards.py
 ```
 
-## 7. Python Verifier Reward
+## 7. Python verifier reward
 
-Diagnose before training:
+先做离线诊断，再决定是否接入训练：
 
 ```bash
 python scripts/diagnose_python_verifier.py \
@@ -125,11 +125,14 @@ python scripts/diagnose_python_verifier.py \
   --scored-output logs/python_verifier/sft_v3_details.jsonl
 ```
 
-Useful signal should show a meaningful gap between final-correct and final-wrong outputs, and should help rank mixed candidates within the same question.
+有效信号应当满足两点：
 
-## 8. External PRM/RM Diagnostics
+- final correct 和 final wrong 输出之间有明显 verifier reward gap。
+- 在同一道题的 mixed candidates 中，verifier 能帮助区分好坏轨迹。
 
-External reward models such as Qwen Math PRM should be evaluated offline first:
+## 8. 外部 PRM/RM 诊断
+
+Qwen Math PRM 这类外部 reward model 应先离线评估：
 
 ```bash
 python scripts/evaluate_qwen_prm_benchmark.py \
@@ -138,11 +141,11 @@ python scripts/evaluate_qwen_prm_benchmark.py \
   --output-dir logs/qwen_prm_eval
 ```
 
-If the signal is weak or fights final-answer improvements, use it only as a small auxiliary term or keep it as a diagnostic.
+如果外部 reward 信号偏弱，或者和 final-answer improvement 打架，就只把它当作小权重辅助项或诊断工具。
 
-## 9. What To Keep In Git
+## 9. Git 中应该保留什么
 
-Keep:
+保留：
 
 ```text
 configs/
@@ -150,16 +153,16 @@ scripts/
 src/
 tests/
 docs/
-small Markdown summaries
+小型 Markdown summaries
 ```
 
-Do not keep:
+不要保留：
 
 ```text
-full candidate JSONL files
-full benchmark JSONL files
-model checkpoints
-LoRA adapters
-large generated logs
-remote-only datasets
+完整 candidate JSONL
+完整 benchmark JSONL
+model checkpoint
+LoRA adapter
+大型生成日志
+远端专用数据集
 ```
