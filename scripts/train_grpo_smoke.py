@@ -89,7 +89,7 @@ def main() -> None:
         device_map="auto" if torch.cuda.is_available() else None,
         trust_remote_code=True,
     )
-    model = PeftModel.from_pretrained(model, str(args.sft_adapter))
+    model = PeftModel.from_pretrained(model, str(args.sft_adapter), is_trainable=True)
     model.config.use_cache = False
     tracked_param_names = _select_tracked_lora_param_names(model, limit=5)
     pre_snapshots = {name: _capture_param_snapshot(model, name) for name in tracked_param_names}
@@ -128,6 +128,10 @@ def main() -> None:
     )
     trainer.create_optimizer()
     optimizer_stats = _collect_optimizer_stats(model, trainer.optimizer)
+    if grad_stats["trainable_lora_params"] == 0:
+        raise RuntimeError("No trainable LoRA parameters detected before training.")
+    if optimizer_stats["optimizer_lora_params"] == 0:
+        raise RuntimeError("Optimizer does not include any LoRA parameters.")
     print(
         "[adapter-diag] optimizer-stats "
         f"optimizer_params={optimizer_stats['optimizer_params']} "
