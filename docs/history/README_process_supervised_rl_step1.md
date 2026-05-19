@@ -99,4 +99,4 @@
 
 后续执行请看：
 
-- [README_process_supervised_rl_step2.md](/Users/bytedance/Documents/New%20project/README_process_supervised_rl_step2.md)
+- [README_process_supervised_rl_step2.md](README_process_supervised_rl_step2.md)
