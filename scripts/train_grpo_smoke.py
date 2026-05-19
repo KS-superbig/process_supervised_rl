@@ -16,6 +16,7 @@ if str(SRC) not in sys.path:
 
 from psrl.candidates import build_prompt, iter_jsonl
 from psrl.prm_v2 import load_mlp_prm
+from psrl.rl.dapo_grpo_trainer import get_grpo_trainer_classes
 from psrl.rl.grpo_rewards import RewardConfig, build_reward_breakdown
 
 
@@ -63,11 +64,14 @@ def main() -> None:
         from datasets import Dataset
         from peft import PeftModel
         from transformers import AutoModelForCausalLM, AutoTokenizer
-        from trl import GRPOConfig, GRPOTrainer
     except ImportError as exc:
         raise SystemExit(
             "Missing GRPO dependency. Install torch, transformers, peft, datasets, and trl on the remote GPU environment."
         ) from exc
+    try:
+        GRPOConfig, GRPOTrainer = get_grpo_trainer_classes()
+    except RuntimeError as exc:
+        raise SystemExit(str(exc)) from exc
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
