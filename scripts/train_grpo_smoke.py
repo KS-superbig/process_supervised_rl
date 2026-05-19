@@ -43,6 +43,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--gradient-accumulation-steps", type=int, default=8)
     parser.add_argument("--max-steps", type=int, default=20)
     parser.add_argument("--beta", type=float, default=0.04, help="KL coefficient passed to TRL GRPOConfig.")
+    parser.add_argument(
+        "--epsilon",
+        type=float,
+        default=None,
+        help="Legacy symmetric PPO/GRPO clip epsilon. If set, epsilon_low=epsilon_high=epsilon.",
+    )
+    parser.add_argument("--epsilon-low", type=float, default=None, help="Lower Clip-Higher epsilon bound.")
+    parser.add_argument("--epsilon-high", type=float, default=None, help="Upper Clip-Higher epsilon bound.")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", default="cpu", help="Device for the lightweight PRM scorer.")
     return parser
@@ -204,6 +212,7 @@ def _completion_to_text(completion) -> str:
 
 
 def _build_grpo_config_kwargs(grpo_config_cls, args: argparse.Namespace, *, bf16: bool) -> dict:
+    epsilon_low, epsilon_high = _resolve_clip_epsilons(args)
     candidate_kwargs = {
         "output_dir": str(args.output_dir),
         "learning_rate": args.learning_rate,
@@ -214,6 +223,8 @@ def _build_grpo_config_kwargs(grpo_config_cls, args: argparse.Namespace, *, bf16
         "max_prompt_length": args.max_prompt_length,
         "max_completion_length": args.max_completion_length,
         "beta": args.beta,
+        "epsilon": epsilon_low,
+        "epsilon_high": epsilon_high,
         "seed": args.seed,
         "bf16": bf16,
         "report_to": [],
@@ -222,6 +233,14 @@ def _build_grpo_config_kwargs(grpo_config_cls, args: argparse.Namespace, *, bf16
     }
     supported = set(inspect.signature(grpo_config_cls.__init__).parameters)
     return {key: value for key, value in candidate_kwargs.items() if key in supported}
+
+
+def _resolve_clip_epsilons(args: argparse.Namespace) -> tuple[float, float]:
+    if args.epsilon is not None:
+        return float(args.epsilon), float(args.epsilon)
+    epsilon_low = 0.2 if args.epsilon_low is None else float(args.epsilon_low)
+    epsilon_high = 0.28 if args.epsilon_high is None else float(args.epsilon_high)
+    return epsilon_low, epsilon_high
 
 
 def _select_tracked_lora_param_names(model, *, limit: int = 5) -> list[str]:
@@ -368,6 +387,7 @@ def _load_prm_calibration(path: Path | None) -> tuple[float, float]:
 
 
 def _write_run_manifest(args: argparse.Namespace, config: RewardConfig, num_rows: int) -> None:
+    epsilon_low, epsilon_high = _resolve_clip_epsilons(args)
     manifest = {
         "train_jsonl": str(args.train_jsonl),
         "model_name": args.model_name,
@@ -394,6 +414,9 @@ def _write_run_manifest(args: argparse.Namespace, config: RewardConfig, num_rows
             "max_completion_length": args.max_completion_length,
             "learning_rate": args.learning_rate,
             "beta": args.beta,
+            "epsilon_low": epsilon_low,
+            "epsilon_high": epsilon_high,
+            "clip_mode": "clip_higher" if epsilon_high != epsilon_low else "symmetric",
             "seed": args.seed,
         },
         "diagnostics": {

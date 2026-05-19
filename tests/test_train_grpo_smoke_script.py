@@ -37,6 +37,7 @@ def test_train_grpo_smoke_parser_defaults_to_rl_smoke_paths():
     assert args.final_weight == 1.0
     assert args.prm_weight == 0.2
     assert args.python_verifier_weight == 0.0
+    assert module._resolve_clip_epsilons(args) == (0.2, 0.28)
 
 
 def test_train_grpo_smoke_parser_accepts_reward_and_generation_controls():
@@ -70,6 +71,10 @@ def test_train_grpo_smoke_parser_accepts_reward_and_generation_controls():
             "0.25",
             "--python-verifier-beta-pass-rate",
             "0.15",
+            "--epsilon-low",
+            "0.18",
+            "--epsilon-high",
+            "0.31",
         ]
     )
 
@@ -82,6 +87,28 @@ def test_train_grpo_smoke_parser_accepts_reward_and_generation_controls():
     assert args.python_verifier_weight == 0.4
     assert args.python_verifier_alpha_step == 0.25
     assert args.python_verifier_beta_pass_rate == 0.15
+    assert module._resolve_clip_epsilons(args) == (0.18, 0.31)
+
+
+def test_train_grpo_smoke_parser_keeps_legacy_symmetric_epsilon():
+    module = _load_script_module("train_grpo_smoke.py")
+    parser = module.build_parser()
+    args = parser.parse_args(
+        [
+            "--model-name",
+            "/models/base",
+            "--sft-adapter",
+            "logs/sft/policy/final",
+            "--prm-dir",
+            "logs/prm_v2/best/trial_001",
+            "--output-dir",
+            "logs/rl/smoke",
+            "--epsilon",
+            "0.17",
+        ]
+    )
+
+    assert module._resolve_clip_epsilons(args) == (0.17, 0.17)
 
 
 def test_load_train_rows_keeps_raw_question_for_prm_reward(tmp_path):
@@ -115,7 +142,7 @@ def test_grpo_config_kwargs_filters_unsupported_trl_parameters():
     module = _load_script_module("train_grpo_smoke.py")
 
     class FakeGRPOConfig:
-        def __init__(self, output_dir=None, max_completion_length=None, beta=0.0):
+        def __init__(self, output_dir=None, max_completion_length=None, beta=0.0, epsilon=0.2, epsilon_high=None):
             pass
 
     parser = module.build_parser()
@@ -135,6 +162,10 @@ def test_grpo_config_kwargs_filters_unsupported_trl_parameters():
             "128",
             "--beta",
             "0.04",
+            "--epsilon-low",
+            "0.19",
+            "--epsilon-high",
+            "0.29",
         ]
     )
 
@@ -144,6 +175,8 @@ def test_grpo_config_kwargs_filters_unsupported_trl_parameters():
         "output_dir": "logs/rl/smoke",
         "max_completion_length": 128,
         "beta": 0.04,
+        "epsilon": 0.19,
+        "epsilon_high": 0.29,
     }
 
 
