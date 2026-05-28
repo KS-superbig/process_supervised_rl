@@ -267,6 +267,7 @@ class SkyworkPRMScorer:
             torch_dtype=torch.bfloat16 if torch.cuda.is_available() and device != "cpu" else torch.float32,
             trust_remote_code=True,
         )
+        model.config.use_cache = False
         model.to(device)
         model.eval()
         print(f"[skywork-prm] loaded class: {model.__class__.__name__}", flush=True)
@@ -282,7 +283,7 @@ class SkyworkPRMScorer:
             inputs = self.tokenizer(text, return_tensors="pt", truncation=True, max_length=2048)
             inputs = {key: value.to(self.device) for key, value in inputs.items()}
             with torch.no_grad():
-                outputs = self.model(**inputs)
+                outputs = self.model(**inputs, use_cache=False)
             step_rewards.append(_extract_reward_scalar(outputs, inputs.get("attention_mask")))
 
         if not step_rewards:
@@ -301,7 +302,7 @@ class SkyworkPRMScorer:
         inputs = self.tokenizer(text, return_tensors="pt", truncation=True, max_length=2048)
         inputs = {key: value.to(self.device) for key, value in inputs.items()}
         with torch.no_grad():
-            outputs = self.model(**inputs)
+            outputs = self.model(**inputs, use_cache=False)
         return _extract_reward_scalar(outputs, inputs.get("attention_mask"))
 
 
