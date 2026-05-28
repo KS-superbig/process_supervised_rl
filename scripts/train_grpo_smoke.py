@@ -277,15 +277,24 @@ class SkyworkPRMScorer:
     def score(self, question: str, completion: str) -> float:
         import torch
 
-        step_rewards = []
-        for step_text in _completion_step_prefixes(completion):
-            text = _format_skywork_prm_input(question=question, completion=step_text)
-            inputs = self.tokenizer(text, return_tensors="pt", truncation=True, max_length=2048)
-            inputs = {key: value.to(self.device) for key, value in inputs.items()}
-            with torch.no_grad():
-                outputs = self.model(**inputs, use_cache=False)
-            step_rewards.append(_extract_reward_scalar(outputs, inputs.get("attention_mask")))
-
+        input_ids, reward_flags = _prepare_skywork_input(question, completion, tokenizer=self.tokenizer)
+        if len(input_ids) > 2048:
+            input_ids = input_ids[-2048:]
+            reward_flags = reward_flags[-2048:]
+        input_tensor = torch.tensor([input_ids], dtype=torch.long, device=self.device)
+        attention_mask = torch.ones_like(input_tensor)
+        reward_flag_tensor = torch.tensor(reward_flags, dtype=torch.bool, device=self.device)
+        with torch.no_grad():
+            outputs = self.model.model(
+                input_ids=input_tensor,
+                attention_mask=attention_mask,
+                use_cache=False,
+                output_hidden_states=False,
+                return_dict=True,
+            )
+            token_rewards = self.model.v_head(outputs.last_hidden_state).squeeze(-1)
+        flagged_rewards = token_rewards[0][reward_flag_tensor]
+        step_rewards = [float(value.detach().float().cpu().item()) for value in flagged_rewards]
         if not step_rewards:
             step_rewards = [self._score_empty_completion(question)]
         reward = float(sum(step_rewards) / len(step_rewards))
@@ -296,14 +305,7 @@ class SkyworkPRMScorer:
         return reward
 
     def _score_empty_completion(self, question: str) -> float:
-        import torch
-
-        text = _format_skywork_prm_input(question=question, completion="")
-        inputs = self.tokenizer(text, return_tensors="pt", truncation=True, max_length=2048)
-        inputs = {key: value.to(self.device) for key, value in inputs.items()}
-        with torch.no_grad():
-            outputs = self.model(**inputs, use_cache=False)
-        return _extract_reward_scalar(outputs, inputs.get("attention_mask"))
+        return self.score(question, "\n")
 
 
 def prm_score(prm, question: str, completion: str, *, device: str) -> float:
@@ -319,6 +321,22 @@ def _completion_step_prefixes(completion: str) -> list[str]:
 
 def _format_skywork_prm_input(*, question: str, completion: str) -> str:
     return f"Question:\n{question.strip()}\n\nAnswer:\n{completion.strip()}"
+
+
+def _prepare_skywork_input(question: str, completion: str, *, tokenizer) -> tuple[list[int], list[int]]:
+    bos = tokenizer.bos_token or ""
+    prompt_ids = tokenizer.encode(bos + question.strip() + "\n")
+    input_ids = list(prompt_ids)
+    reward_flags = [0] * len(prompt_ids)
+    step_token_id = tokenizer.encode("\n")[-1]
+    for step in completion.split("\n"):
+        step_ids = tokenizer.encode(step) if step else []
+        step_ids.append(step_token_id)
+        flags = [0] * len(step_ids)
+        flags[-1] = 1
+        input_ids.extend(step_ids)
+        reward_flags.extend(flags)
+    return input_ids, reward_flags
 
 
 def _extract_reward_scalar(outputs, attention_mask) -> float:

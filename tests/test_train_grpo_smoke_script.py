@@ -228,6 +228,26 @@ def test_completion_step_prefixes_builds_incremental_prefixes():
     assert prefixes == ["step one", "step one\nstep two"]
 
 
+def test_prepare_skywork_input_marks_each_newline_step_reward():
+    module = _load_script_module("train_grpo_smoke.py")
+
+    class FakeTokenizer:
+        bos_token = "<s>"
+
+        def encode(self, text):
+            return [ord(char) for char in text]
+
+    input_ids, reward_flags = module._prepare_skywork_input(
+        "Q?",
+        "step one\nstep two",
+        tokenizer=FakeTokenizer(),
+    )
+
+    assert len(input_ids) == len(reward_flags)
+    assert sum(reward_flags) == 2
+    assert [input_ids[index] for index, flag in enumerate(reward_flags) if flag] == [ord("\n"), ord("\n")]
+
+
 def test_extract_reward_scalar_reads_token_level_last_non_pad_score():
     import torch
 
