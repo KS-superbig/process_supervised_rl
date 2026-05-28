@@ -14,8 +14,9 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from psrl.candidates import build_prompt, iter_jsonl
+from psrl.candidates import build_prompt, extract_candidate_final, iter_jsonl
 from psrl.prm_v2 import load_mlp_prm
+from psrl.reward.final_reward import compute_final_reward
 from psrl.rl.dapo_grpo_trainer import get_grpo_trainer_classes
 from psrl.rl.grpo_rewards import RewardConfig, build_reward_breakdown
 
@@ -25,7 +26,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--train-jsonl", type=Path, default=Path("data/processed/gsm8k_train.jsonl"))
     parser.add_argument("--model-name", required=True, help="Base model path or Hugging Face id.")
     parser.add_argument("--sft-adapter", type=Path, required=True, help="LoRA-SFT adapter used as policy init.")
-    parser.add_argument("--prm-dir", type=Path, required=True, help="PRM v2 directory containing model.pt and meta.json.")
+    parser.add_argument("--prm-dir", type=Path, required=True, help="PRM directory or Hugging Face reward model path.")
+    parser.add_argument(
+        "--prm-backend",
+        default="auto",
+        choices=["auto", "mlp", "skywork"],
+        help="PRM scorer backend. auto uses MLP PRM v2 when model.pt/meta.json exist, otherwise Skywork/HF PRM.",
+    )
     parser.add_argument("--prm-calibration", type=Path, help="Scored candidate JSONL used to z-score PRM rewards.")
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--limit", type=int, default=512, help="Number of GSM8K train rows for smoke run.")
@@ -36,7 +43,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--python-verifier-alpha-step", type=float, default=0.3)
     parser.add_argument("--python-verifier-beta-pass-rate", type=float, default=0.2)
     parser.add_argument("--python-verifier-gamma-no-eq-penalty", type=float, default=0.0)
-    parser.add_argument("--num-generations", type=int, default=4)
+    parser.add_argument("--length-penalty-weight", type=float, default=0.0)
+    parser.add_argument("--length-penalty-start", type=int, default=0)
+    parser.add_argument("--length-penalty-max", type=int, default=0)
+    parser.add_argument("--num-generations", type=int, default=8)
+    parser.add_argument("--generation-batch-size", type=int, default=None)
+    parser.add_argument("--dynamic-sampling", action="store_true", help="Keep only groups with 0 < correct < G.")
+    parser.add_argument("--max-num-gen-batches", type=int, default=4, help="Maximum rollout attempts for dynamic sampling.")
     parser.add_argument("--max-prompt-length", type=int, default=512)
     parser.add_argument("--max-completion-length", type=int, default=256)
     parser.add_argument("--learning-rate", type=float, default=1e-6)
@@ -44,6 +57,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--gradient-accumulation-steps", type=int, default=8)
     parser.add_argument("--max-steps", type=int, default=20)
     parser.add_argument("--beta", type=float, default=0.04, help="KL coefficient passed to TRL GRPOConfig.")
+    parser.add_argument("--loss-type", default="dapo", choices=["grpo", "dapo", "bnpo", "dr_grpo"])
     parser.add_argument(
         "--epsilon",
         type=float,
@@ -53,7 +67,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--epsilon-low", type=float, default=None, help="Lower Clip-Higher epsilon bound.")
     parser.add_argument("--epsilon-high", type=float, default=None, help="Upper Clip-Higher epsilon bound.")
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--device", default="cpu", help="Device for the lightweight PRM scorer.")
+    parser.add_argument("--device", default="cpu", help="Device for the PRM scorer.")
     return parser
 
 
@@ -77,7 +91,7 @@ def main() -> None:
 
     rows = _load_train_rows(args.train_jsonl, limit=args.limit)
     dataset = Dataset.from_list(rows)
-    prm = load_mlp_prm(args.prm_dir, device=args.device)
+    prm = load_prm_scorer(args.prm_dir, backend=args.prm_backend, device=args.device)
     prm_mean, prm_std = _load_prm_calibration(args.prm_calibration)
     reward_config = RewardConfig(
         final_weight=args.final_weight,
@@ -89,6 +103,9 @@ def main() -> None:
         python_verifier_alpha_step=args.python_verifier_alpha_step,
         python_verifier_beta_pass_rate=args.python_verifier_beta_pass_rate,
         python_verifier_gamma_no_eq_penalty=args.python_verifier_gamma_no_eq_penalty,
+        length_penalty_weight=args.length_penalty_weight,
+        length_penalty_start=args.length_penalty_start,
+        length_penalty_max=args.length_penalty_max,
     )
 
     tokenizer = AutoTokenizer.from_pretrained(args.model_name, trust_remote_code=True)
@@ -111,26 +128,49 @@ def main() -> None:
 
     def reward_func(prompts, completions, gold_final, question, **_kwargs):
         rewards = []
-        for raw_question, completion, gold in zip(question, completions, gold_final):
+        completion_ids = _kwargs.get("completion_ids")
+        completion_id_rows = completion_ids if completion_ids is not None else [None] * len(completions)
+        completion_lengths = [
+            _completion_token_length(_completion_to_text(completion), ids, tokenizer=tokenizer)
+            for completion, ids in zip(completions, completion_id_rows)
+        ]
+        for raw_question, completion, gold, completion_length in zip(
+            question, completions, gold_final, completion_lengths
+        ):
             completion_text = _completion_to_text(completion)
             raw_prm_score = prm_score(prm, raw_question, completion_text, device=args.device)
             breakdown = build_reward_breakdown(
                 gold_final=gold,
                 completion_text=completion_text,
+                completion_token_length=completion_length,
                 raw_prm_score=raw_prm_score,
                 config=reward_config,
             )
             rewards.append(breakdown.total_reward)
         return rewards
 
-    training_args = GRPOConfig(**_build_grpo_config_kwargs(GRPOConfig, args, bf16=torch.cuda.is_available()))
+    reward_funcs = [reward_func]
+    reward_weights = None
+    final_correct_recorder = None
+    if args.dynamic_sampling:
+        final_correct_recorder = FinalCorrectnessRecorder()
+        reward_funcs.append(final_correct_recorder)
+        reward_weights = [1.0, 0.0]
+
+    training_args = GRPOConfig(
+        **_build_grpo_config_kwargs(GRPOConfig, args, bf16=torch.cuda.is_available(), reward_weights=reward_weights)
+    )
     trainer = GRPOTrainer(
         model=model,
         args=training_args,
         processing_class=tokenizer,
-        reward_funcs=reward_func,
+        reward_funcs=reward_funcs,
         train_dataset=dataset,
     )
+    if args.dynamic_sampling:
+        trainer.dynamic_sampling_enabled = True
+        trainer.dynamic_sampling_max_gen_batches = args.max_num_gen_batches
+        trainer.dynamic_sampling_correctness_source = final_correct_recorder
     grad_stats = _collect_grad_stats(model)
     print(
         "[adapter-diag] grad-stats "
@@ -174,11 +214,145 @@ def main() -> None:
     )
 
 
+def load_prm_scorer(prm_dir: Path, *, backend: str, device: str):
+    resolved_backend = _resolve_prm_backend(prm_dir, backend=backend)
+    if resolved_backend == "mlp":
+        return MLPPRMScorer(load_mlp_prm(prm_dir, device=device), device=device)
+    if resolved_backend == "skywork":
+        return SkyworkPRMScorer.from_pretrained(prm_dir, device=device)
+    raise ValueError(f"Unsupported PRM backend: {backend}")
+
+
+def _resolve_prm_backend(prm_dir: Path, *, backend: str) -> str:
+    if backend != "auto":
+        return backend
+    if (prm_dir / "model.pt").exists() and (prm_dir / "meta.json").exists():
+        return "mlp"
+    return "skywork"
+
+
+class MLPPRMScorer:
+    backend = "mlp"
+
+    def __init__(self, prm, *, device: str) -> None:
+        self.prm = prm
+        self.device = device
+
+    def score(self, question: str, completion: str) -> float:
+        scored = self.prm.model(
+            _tensor_for_prm(self.prm, question=question, completion=completion, device=self.device)
+        ).squeeze(-1)
+        return float(scored.detach().cpu().item())
+
+
+class SkyworkPRMScorer:
+    backend = "skywork"
+
+    def __init__(self, model, tokenizer, *, device: str) -> None:
+        self.model = model
+        self.tokenizer = tokenizer
+        self.device = device
+        self._debug_printed = False
+
+    @classmethod
+    def from_pretrained(cls, model_dir: Path, *, device: str):
+        import torch
+        from transformers import AutoModel, AutoTokenizer
+
+        tokenizer = AutoTokenizer.from_pretrained(str(model_dir), trust_remote_code=True)
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token
+        model = AutoModel.from_pretrained(
+            str(model_dir),
+            torch_dtype=torch.bfloat16 if torch.cuda.is_available() and device != "cpu" else torch.float32,
+            trust_remote_code=True,
+        )
+        model.to(device)
+        model.eval()
+        print(f"[skywork-prm] loaded class: {model.__class__.__name__}", flush=True)
+        print(f"[skywork-prm] has v_head: {hasattr(model, 'v_head')}", flush=True)
+        return cls(model, tokenizer, device=device)
+
+    def score(self, question: str, completion: str) -> float:
+        import torch
+
+        step_rewards = []
+        for step_text in _completion_step_prefixes(completion):
+            text = _format_skywork_prm_input(question=question, completion=step_text)
+            inputs = self.tokenizer(text, return_tensors="pt", truncation=True, max_length=2048)
+            inputs = {key: value.to(self.device) for key, value in inputs.items()}
+            with torch.no_grad():
+                outputs = self.model(**inputs)
+            step_rewards.append(_extract_reward_scalar(outputs, inputs.get("attention_mask")))
+
+        if not step_rewards:
+            step_rewards = [self._score_empty_completion(question)]
+        reward = float(sum(step_rewards) / len(step_rewards))
+        if not self._debug_printed:
+            print(f"[skywork-prm] step_rewards={step_rewards}", flush=True)
+            print(f"[skywork-prm] aggregate=mean step rewards = {reward:.6f}", flush=True)
+            self._debug_printed = True
+        return reward
+
+    def _score_empty_completion(self, question: str) -> float:
+        import torch
+
+        text = _format_skywork_prm_input(question=question, completion="")
+        inputs = self.tokenizer(text, return_tensors="pt", truncation=True, max_length=2048)
+        inputs = {key: value.to(self.device) for key, value in inputs.items()}
+        with torch.no_grad():
+            outputs = self.model(**inputs)
+        return _extract_reward_scalar(outputs, inputs.get("attention_mask"))
+
+
 def prm_score(prm, question: str, completion: str, *, device: str) -> float:
-    scored = prm.model(
-        _tensor_for_prm(prm, question=question, completion=completion, device=device)
-    ).squeeze(-1)
-    return float(scored.detach().cpu().item())
+    return prm.score(question, completion)
+
+
+def _completion_step_prefixes(completion: str) -> list[str]:
+    lines = [line.strip() for line in completion.splitlines() if line.strip()]
+    if not lines and completion.strip():
+        lines = [completion.strip()]
+    return ["\n".join(lines[: index + 1]) for index in range(len(lines))]
+
+
+def _format_skywork_prm_input(*, question: str, completion: str) -> str:
+    return f"Question:\n{question.strip()}\n\nAnswer:\n{completion.strip()}"
+
+
+def _extract_reward_scalar(outputs, attention_mask) -> float:
+    import torch
+
+    candidate = None
+    for attr in ("rewards", "scores", "logits"):
+        value = getattr(outputs, attr, None)
+        if value is not None:
+            candidate = value
+            break
+    if candidate is None:
+        if isinstance(outputs, (tuple, list)) and outputs:
+            candidate = outputs[0]
+        else:
+            candidate = outputs
+    if not torch.is_tensor(candidate):
+        raise RuntimeError(f"Skywork PRM returned unsupported output type: {type(candidate)!r}")
+
+    tensor = candidate.detach().float()
+    if tensor.ndim == 0:
+        return float(tensor.cpu().item())
+    if tensor.ndim == 1:
+        return float(tensor[-1].cpu().item())
+    if tensor.ndim == 2:
+        if tensor.shape[-1] == 1:
+            return float(tensor[0, -1].cpu().item())
+        if attention_mask is not None and tensor.shape[1] == attention_mask.shape[1]:
+            last_idx = int(attention_mask[0].sum().item()) - 1
+            return float(tensor[0, last_idx].cpu().item())
+        return float(tensor[0, -1].cpu().item())
+    if attention_mask is not None and tensor.shape[1] == attention_mask.shape[1]:
+        last_idx = int(attention_mask[0].sum().item()) - 1
+        return float(tensor[0, last_idx].mean().cpu().item())
+    return float(tensor.reshape(-1)[-1].cpu().item())
 
 
 def _tensor_for_prm(prm, *, question: str, completion: str, device: str):
@@ -215,7 +389,35 @@ def _completion_to_text(completion) -> str:
     return str(completion)
 
 
-def _build_grpo_config_kwargs(grpo_config_cls, args: argparse.Namespace, *, bf16: bool) -> dict:
+def _completion_token_length(completion_text: str, completion_ids, *, tokenizer) -> int:
+    if completion_ids is not None:
+        return len(completion_ids)
+    return len(tokenizer(completion_text, add_special_tokens=False)["input_ids"])
+
+
+class FinalCorrectnessRecorder:
+    """Zero-weight reward function used only for DAPO dynamic sampling."""
+
+    def __init__(self) -> None:
+        self.last_values: list[float] = []
+
+    def __call__(self, prompts, completions, gold_final, **_kwargs):
+        values = []
+        for completion, gold in zip(completions, gold_final):
+            completion_text = _completion_to_text(completion)
+            candidate_final = extract_candidate_final(completion_text)
+            values.append(float(compute_final_reward(gold, candidate_final)))
+        self.last_values = values
+        return values
+
+
+def _build_grpo_config_kwargs(
+    grpo_config_cls,
+    args: argparse.Namespace,
+    *,
+    bf16: bool,
+    reward_weights: list[float] | None = None,
+) -> dict:
     epsilon_low, epsilon_high = _resolve_clip_epsilons(args)
     candidate_kwargs = {
         "output_dir": str(args.output_dir),
@@ -224,11 +426,14 @@ def _build_grpo_config_kwargs(grpo_config_cls, args: argparse.Namespace, *, bf16
         "gradient_accumulation_steps": args.gradient_accumulation_steps,
         "max_steps": args.max_steps,
         "num_generations": args.num_generations,
+        "generation_batch_size": args.generation_batch_size,
         "max_prompt_length": args.max_prompt_length,
         "max_completion_length": args.max_completion_length,
         "beta": args.beta,
+        "loss_type": args.loss_type,
         "epsilon": epsilon_low,
         "epsilon_high": epsilon_high,
+        "reward_weights": reward_weights,
         "seed": args.seed,
         "bf16": bf16,
         "report_to": [],
@@ -397,6 +602,7 @@ def _write_run_manifest(args: argparse.Namespace, config: RewardConfig, num_rows
         "model_name": args.model_name,
         "sft_adapter": str(args.sft_adapter),
         "prm_dir": str(args.prm_dir),
+        "prm_backend": _resolve_prm_backend(args.prm_dir, backend=args.prm_backend),
         "prm_calibration": str(args.prm_calibration) if args.prm_calibration else None,
         "num_rows": num_rows,
         "reward": {
@@ -410,16 +616,23 @@ def _write_run_manifest(args: argparse.Namespace, config: RewardConfig, num_rows
             "python_verifier_alpha_step": config.python_verifier_alpha_step,
             "python_verifier_beta_pass_rate": config.python_verifier_beta_pass_rate,
             "python_verifier_gamma_no_eq_penalty": config.python_verifier_gamma_no_eq_penalty,
+            "length_penalty_weight": config.length_penalty_weight,
+            "length_penalty_start": config.length_penalty_start,
+            "length_penalty_max": config.length_penalty_max,
         },
         "training": {
             "max_steps": args.max_steps,
             "num_generations": args.num_generations,
+            "dynamic_sampling": args.dynamic_sampling,
+            "max_num_gen_batches": args.max_num_gen_batches,
             "max_prompt_length": args.max_prompt_length,
             "max_completion_length": args.max_completion_length,
             "learning_rate": args.learning_rate,
             "beta": args.beta,
+            "loss_type": args.loss_type,
             "epsilon_low": epsilon_low,
             "epsilon_high": epsilon_high,
+            "generation_batch_size": args.generation_batch_size,
             "clip_mode": "clip_higher" if epsilon_high != epsilon_low else "symmetric",
             "seed": args.seed,
         },
