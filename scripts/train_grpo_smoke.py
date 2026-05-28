@@ -252,27 +252,51 @@ class SkyworkPRMScorer:
         self.model = model
         self.tokenizer = tokenizer
         self.device = device
+        self.v_head = getattr(model, "v_head", None)
         self._debug_printed = False
 
     @classmethod
     def from_pretrained(cls, model_dir: Path, *, device: str):
         import torch
-        from transformers import AutoModel, AutoTokenizer
+        from torch import nn
+        from transformers import AutoConfig, AutoTokenizer, Qwen2Config, Qwen2ForCausalLM
 
         tokenizer = AutoTokenizer.from_pretrained(str(model_dir), trust_remote_code=True)
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
-        model = AutoModel.from_pretrained(
+        reward_config = AutoConfig.from_pretrained(str(model_dir), trust_remote_code=True)
+        qwen_config = Qwen2Config(
+            **{
+                key: value
+                for key, value in reward_config.to_dict().items()
+                if key not in {"architectures", "auto_map", "model_type"}
+            }
+        )
+        model = Qwen2ForCausalLM.from_pretrained(
             str(model_dir),
+            config=qwen_config,
             torch_dtype=torch.bfloat16 if torch.cuda.is_available() and device != "cpu" else torch.float32,
             trust_remote_code=True,
+            ignore_mismatched_sizes=True,
         )
         model.config.use_cache = False
+        v_head = nn.Linear(model.config.hidden_size, 1)
+        state_dict = torch.load(str(model_dir / "pytorch_model.bin"), map_location="cpu")
+        v_head.load_state_dict(
+            {
+                "weight": state_dict["v_head.summary.weight"].float(),
+                "bias": state_dict["v_head.summary.bias"].float(),
+            }
+        )
         model.to(device)
+        v_head.to(device=device, dtype=next(model.parameters()).dtype)
         model.eval()
+        v_head.eval()
         print(f"[skywork-prm] loaded class: {model.__class__.__name__}", flush=True)
-        print(f"[skywork-prm] has v_head: {hasattr(model, 'v_head')}", flush=True)
-        return cls(model, tokenizer, device=device)
+        print("[skywork-prm] has v_head: True", flush=True)
+        scorer = cls(model, tokenizer, device=device)
+        scorer.v_head = v_head
+        return scorer
 
     def score(self, question: str, completion: str) -> float:
         import torch
@@ -285,14 +309,14 @@ class SkyworkPRMScorer:
         attention_mask = torch.ones_like(input_tensor)
         reward_flag_tensor = torch.tensor(reward_flags, dtype=torch.bool, device=self.device)
         with torch.no_grad():
-            outputs = self.model.model(
+            outputs = self.model(
                 input_ids=input_tensor,
                 attention_mask=attention_mask,
                 use_cache=False,
-                output_hidden_states=False,
+                output_hidden_states=True,
                 return_dict=True,
             )
-            token_rewards = self.model.v_head(outputs.last_hidden_state).squeeze(-1)
+            token_rewards = self.v_head(outputs.hidden_states[-1]).squeeze(-1)
         flagged_rewards = token_rewards[0][reward_flag_tensor]
         step_rewards = [float(value.detach().float().cpu().item()) for value in flagged_rewards]
         if not step_rewards:
