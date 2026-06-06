@@ -11,6 +11,8 @@ from psrl.reward.python_verifier import python_verifier_reward
 class RewardConfig:
     final_weight: float = 1.0
     prm_weight: float = 0.2
+    reward_mode: str = "additive"
+    wrong_final_reward: float = 0.0
     prm_mean: float = 0.0
     prm_std: float = 1.0
     prm_clip: float = 3.0
@@ -83,11 +85,12 @@ def build_reward_breakdown(
         start=config.length_penalty_start,
         max_length=config.length_penalty_max,
     )
-    total_reward = (
-        config.final_weight * final_reward
-        + config.prm_weight * prm_reward
-        + config.python_verifier_weight * verifier_reward
-        + config.length_penalty_weight * length_penalty
+    total_reward = compute_total_reward(
+        final_reward=final_reward,
+        prm_reward=prm_reward,
+        python_verifier_reward=verifier_reward,
+        length_penalty=length_penalty,
+        config=config,
     )
     return RewardBreakdown(
         final_reward=float(final_reward),
@@ -96,3 +99,24 @@ def build_reward_breakdown(
         length_penalty=float(length_penalty),
         total_reward=float(total_reward),
     )
+
+
+def compute_total_reward(
+    *,
+    final_reward: float,
+    prm_reward: float,
+    python_verifier_reward: float,
+    length_penalty: float,
+    config: RewardConfig,
+) -> float:
+    auxiliary_reward = (
+        config.python_verifier_weight * python_verifier_reward
+        + config.length_penalty_weight * length_penalty
+    )
+    if config.reward_mode == "additive":
+        return float(config.final_weight * final_reward + config.prm_weight * prm_reward + auxiliary_reward)
+    if config.reward_mode == "gated_prm":
+        if final_reward > 0.0:
+            return float(config.final_weight * final_reward + config.prm_weight * prm_reward + auxiliary_reward)
+        return float(config.wrong_final_reward + auxiliary_reward)
+    raise ValueError(f"Unsupported reward_mode: {config.reward_mode}")

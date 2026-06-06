@@ -41,6 +41,51 @@ def test_build_reward_breakdown_penalizes_wrong_final_answer_but_keeps_prm_compo
     assert breakdown.total_reward == 0.1
 
 
+def test_build_reward_breakdown_gated_prm_ignores_prm_when_final_answer_wrong():
+    config = RewardConfig(
+        final_weight=1.0,
+        prm_weight=0.2,
+        prm_mean=0.0,
+        prm_std=1.0,
+        prm_clip=3.0,
+        reward_mode="gated_prm",
+        wrong_final_reward=0.0,
+    )
+
+    breakdown = build_reward_breakdown(
+        gold_final="42",
+        completion_text="Reasoning here. The final answer is 41.",
+        raw_prm_score=2.0,
+        config=config,
+    )
+
+    assert breakdown.final_reward == 0.0
+    assert breakdown.prm_reward == 2.0
+    assert breakdown.total_reward == 0.0
+
+
+def test_build_reward_breakdown_gated_prm_adds_prm_only_when_final_answer_correct():
+    config = RewardConfig(
+        final_weight=1.0,
+        prm_weight=0.2,
+        prm_mean=0.0,
+        prm_std=1.0,
+        prm_clip=3.0,
+        reward_mode="gated_prm",
+    )
+
+    breakdown = build_reward_breakdown(
+        gold_final="42",
+        completion_text="Reasoning here. The final answer is 42.",
+        raw_prm_score=2.0,
+        config=config,
+    )
+
+    assert breakdown.final_reward == 1.0
+    assert breakdown.prm_reward == 2.0
+    assert breakdown.total_reward == 1.4
+
+
 def test_build_reward_breakdown_can_include_python_verifier_component():
     config = RewardConfig(
         final_weight=1.0,

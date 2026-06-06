@@ -6,6 +6,7 @@ import hashlib
 import inspect
 import json
 from pathlib import Path
+import shutil
 import statistics
 import sys
 
@@ -18,7 +19,7 @@ from psrl.candidates import build_prompt, extract_candidate_final, iter_jsonl
 from psrl.prm_v2 import load_mlp_prm
 from psrl.reward.final_reward import compute_final_reward
 from psrl.rl.dapo_grpo_trainer import get_grpo_trainer_classes
-from psrl.rl.grpo_rewards import RewardConfig, build_reward_breakdown
+from psrl.rl.grpo_rewards import RewardConfig, build_reward_breakdown, compute_total_reward
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -36,8 +37,21 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--prm-calibration", type=Path, help="Scored candidate JSONL used to z-score PRM rewards.")
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--limit", type=int, default=512, help="Number of GSM8K train rows for smoke run.")
+    parser.add_argument("--reward-debug-jsonl", type=Path, help="Optional JSONL path for per-completion reward details.")
     parser.add_argument("--final-weight", type=float, default=1.0)
     parser.add_argument("--prm-weight", type=float, default=0.2)
+    parser.add_argument(
+        "--reward-mode",
+        default="additive",
+        choices=["additive", "gated_prm"],
+        help="Reward aggregation mode. gated_prm only applies PRM reward when the final answer is correct.",
+    )
+    parser.add_argument(
+        "--wrong-final-reward",
+        type=float,
+        default=0.0,
+        help="Total reward used by gated_prm when the final answer is wrong, before auxiliary terms.",
+    )
     parser.add_argument("--prm-clip", type=float, default=3.0)
     parser.add_argument("--python-verifier-weight", type=float, default=0.0)
     parser.add_argument("--python-verifier-alpha-step", type=float, default=0.3)
@@ -55,7 +69,22 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--learning-rate", type=float, default=1e-6)
     parser.add_argument("--per-device-train-batch-size", type=int, default=1)
     parser.add_argument("--gradient-accumulation-steps", type=int, default=8)
+    parser.add_argument("--gradient-checkpointing", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--max-steps", type=int, default=20)
+    parser.add_argument("--save-steps", type=int, help="Checkpoint save interval. Defaults to min(max_steps, 50).")
+    parser.add_argument("--save-total-limit", type=int, default=2, help="Maximum number of checkpoints to keep.")
+    parser.add_argument(
+        "--save-only-model",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Save only model weights at checkpoints, without optimizer/scheduler states.",
+    )
+    parser.add_argument(
+        "--delete-saved-ref-adapter",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Delete TRL's saved ref adapter copies after checkpoint/final saves to reduce disk usage.",
+    )
     parser.add_argument("--beta", type=float, default=0.04, help="KL coefficient passed to TRL GRPOConfig.")
     parser.add_argument("--loss-type", default="dapo", choices=["grpo", "dapo", "bnpo", "dr_grpo"])
     parser.add_argument(
@@ -66,6 +95,29 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--epsilon-low", type=float, default=None, help="Lower Clip-Higher epsilon bound.")
     parser.add_argument("--epsilon-high", type=float, default=None, help="Upper Clip-Higher epsilon bound.")
+    parser.add_argument(
+        "--merge-sft-adapter",
+        action="store_true",
+        help="Merge the SFT adapter into the base model in memory, then attach a fresh trainable LoRA adapter.",
+    )
+    parser.add_argument("--new-lora-r", type=int, default=512, help="Rank for the fresh LoRA used with --merge-sft-adapter.")
+    parser.add_argument(
+        "--new-lora-alpha",
+        type=int,
+        default=1024,
+        help="LoRA alpha for the fresh LoRA used with --merge-sft-adapter.",
+    )
+    parser.add_argument(
+        "--new-lora-dropout",
+        type=float,
+        default=0.05,
+        help="LoRA dropout for the fresh LoRA used with --merge-sft-adapter.",
+    )
+    parser.add_argument(
+        "--new-lora-target-modules",
+        default="q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj",
+        help="Comma-separated target module names for the fresh LoRA used with --merge-sft-adapter.",
+    )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", default="cpu", help="Device for the PRM scorer.")
     return parser
@@ -76,8 +128,8 @@ def main() -> None:
     try:
         import torch
         from datasets import Dataset
-        from peft import PeftModel
-        from transformers import AutoModelForCausalLM, AutoTokenizer
+        from peft import LoraConfig, PeftModel, get_peft_model
+        from transformers import AutoModelForCausalLM, AutoTokenizer, TrainerCallback
     except ImportError as exc:
         raise SystemExit(
             "Missing GRPO dependency. Install torch, transformers, peft, datasets, and trl on the remote GPU environment."
@@ -88,6 +140,10 @@ def main() -> None:
         raise SystemExit(str(exc)) from exc
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
+    reward_debug_file = None
+    if args.reward_debug_jsonl is not None:
+        args.reward_debug_jsonl.parent.mkdir(parents=True, exist_ok=True)
+        reward_debug_file = args.reward_debug_jsonl.open("w", encoding="utf-8")
 
     rows = _load_train_rows(args.train_jsonl, limit=args.limit)
     dataset = Dataset.from_list(rows)
@@ -96,6 +152,8 @@ def main() -> None:
     reward_config = RewardConfig(
         final_weight=args.final_weight,
         prm_weight=args.prm_weight,
+        reward_mode=args.reward_mode,
+        wrong_final_reward=args.wrong_final_reward,
         prm_mean=prm_mean,
         prm_std=prm_std,
         prm_clip=args.prm_clip,
@@ -118,7 +176,20 @@ def main() -> None:
         device_map="auto" if torch.cuda.is_available() else None,
         trust_remote_code=True,
     )
-    model = PeftModel.from_pretrained(model, str(args.sft_adapter), is_trainable=True)
+    if args.merge_sft_adapter:
+        model = PeftModel.from_pretrained(model, str(args.sft_adapter), is_trainable=False)
+        model = model.merge_and_unload()
+        lora_cfg = LoraConfig(
+            r=args.new_lora_r,
+            lora_alpha=args.new_lora_alpha,
+            lora_dropout=args.new_lora_dropout,
+            bias="none",
+            task_type="CAUSAL_LM",
+            target_modules=_parse_new_lora_target_modules(args.new_lora_target_modules),
+        )
+        model = get_peft_model(model, lora_cfg)
+    else:
+        model = PeftModel.from_pretrained(model, str(args.sft_adapter), is_trainable=True)
     model.config.use_cache = False
     tracked_param_names = _select_tracked_lora_param_names(model, limit=5)
     pre_snapshots = {name: _capture_param_snapshot(model, name) for name in tracked_param_names}
@@ -146,6 +217,41 @@ def main() -> None:
                 raw_prm_score=raw_prm_score,
                 config=reward_config,
             )
+            if reward_debug_file is not None:
+                formula_rhs = compute_total_reward(
+                    final_reward=breakdown.final_reward,
+                    prm_reward=breakdown.prm_reward,
+                    python_verifier_reward=breakdown.python_verifier_reward,
+                    length_penalty=breakdown.length_penalty,
+                    config=reward_config,
+                )
+                reward_debug_file.write(
+                    json.dumps(
+                        {
+                            "question_hash": hashlib.sha256(raw_question.encode("utf-8")).hexdigest()[:12],
+                            "question": raw_question,
+                            "gold_final": gold,
+                            "predicted_final": extract_candidate_final(completion_text),
+                            "completion_token_length": completion_length,
+                            "completion_preview": completion_text[:500],
+                            "final_reward": breakdown.final_reward,
+                            "raw_prm_score": raw_prm_score,
+                            "prm_reward": breakdown.prm_reward,
+                            "prm_weight": reward_config.prm_weight,
+                            "weighted_prm_contribution": reward_config.prm_weight * breakdown.prm_reward,
+                            "reward_mode": reward_config.reward_mode,
+                            "wrong_final_reward": reward_config.wrong_final_reward,
+                            "python_verifier_reward": breakdown.python_verifier_reward,
+                            "length_penalty": breakdown.length_penalty,
+                            "total_reward": breakdown.total_reward,
+                            "formula_rhs": formula_rhs,
+                            "formula_diff": breakdown.total_reward - formula_rhs,
+                        },
+                        ensure_ascii=False,
+                    )
+                    + "\n"
+                )
+                reward_debug_file.flush()
             rewards.append(breakdown.total_reward)
         return rewards
 
@@ -167,6 +273,8 @@ def main() -> None:
         reward_funcs=reward_funcs,
         train_dataset=dataset,
     )
+    if args.delete_saved_ref_adapter:
+        trainer.add_callback(_make_clean_ref_callback(TrainerCallback))
     if args.dynamic_sampling:
         trainer.dynamic_sampling_enabled = True
         trainer.dynamic_sampling_max_gen_batches = args.max_num_gen_batches
@@ -199,6 +307,8 @@ def main() -> None:
         print(f"[adapter-diag] post-train {name}: sha256={snap['sha256']} norm={snap['norm']:.8f}", flush=True)
     trainer.save_model(str(args.output_dir / "final"))
     tokenizer.save_pretrained(str(args.output_dir / "final"))
+    if args.delete_saved_ref_adapter:
+        _delete_saved_ref_adapter_dirs(args.output_dir)
     saved_snapshots = {name: _capture_saved_adapter_snapshot(args.output_dir / "final", name) for name in tracked_param_names}
     for name in tracked_param_names:
         snap = saved_snapshots[name]
@@ -212,6 +322,8 @@ def main() -> None:
         grad_stats=grad_stats,
         optimizer_stats=optimizer_stats,
     )
+    if reward_debug_file is not None:
+        reward_debug_file.close()
 
 
 def load_prm_scorer(prm_dir: Path, *, backend: str, device: str):
@@ -275,7 +387,7 @@ class SkyworkPRMScorer:
         model = Qwen2ForCausalLM.from_pretrained(
             str(model_dir),
             config=qwen_config,
-            torch_dtype=torch.bfloat16 if torch.cuda.is_available() and device != "cpu" else torch.float32,
+            torch_dtype=torch.float32,
             trust_remote_code=True,
             ignore_mismatched_sizes=True,
         )
@@ -294,20 +406,29 @@ class SkyworkPRMScorer:
         v_head.eval()
         print(f"[skywork-prm] loaded class: {model.__class__.__name__}", flush=True)
         print("[skywork-prm] has v_head: True", flush=True)
+        print("[skywork-prm] backend: manual_qwen2_v_head", flush=True)
         scorer = cls(model, tokenizer, device=device)
         scorer.v_head = v_head
         return scorer
 
     def score(self, question: str, completion: str) -> float:
         import torch
+        from model_utils.io_utils import derive_step_rewards, prepare_batch_input_for_model, prepare_input
 
-        input_ids, reward_flags = _prepare_skywork_input(question, completion, tokenizer=self.tokenizer)
-        if len(input_ids) > 2048:
-            input_ids = input_ids[-2048:]
-            reward_flags = reward_flags[-2048:]
-        input_tensor = torch.tensor([input_ids], dtype=torch.long, device=self.device)
-        attention_mask = torch.ones_like(input_tensor)
-        reward_flag_tensor = torch.tensor(reward_flags, dtype=torch.bool, device=self.device)
+        input_ids, _steps, reward_flags = prepare_input(
+            question,
+            completion,
+            tokenizer=self.tokenizer,
+            step_token="\n",
+        )
+        input_tensor, attention_mask, reward_flag_tensor = prepare_batch_input_for_model(
+            [input_ids],
+            [reward_flags],
+            self.tokenizer.pad_token_id,
+        )
+        input_tensor = input_tensor.to(self.device)
+        attention_mask = attention_mask.to(self.device)
+        reward_flag_tensor = reward_flag_tensor.to(self.device)
         with torch.no_grad():
             outputs = self.model(
                 input_ids=input_tensor,
@@ -317,10 +438,12 @@ class SkyworkPRMScorer:
                 return_dict=True,
             )
             token_rewards = self.v_head(outputs.hidden_states[-1]).squeeze(-1)
-        flagged_rewards = token_rewards[0][reward_flag_tensor]
-        step_rewards = [float(value.detach().float().cpu().item()) for value in flagged_rewards]
+        step_rewards_batch = derive_step_rewards(token_rewards, reward_flag_tensor)
+        step_rewards = [float(value) for value in (step_rewards_batch[0] if step_rewards_batch else [])]
         if not step_rewards:
             step_rewards = [self._score_empty_completion(question)]
+        if not all(value == value and value not in (float("inf"), float("-inf")) for value in step_rewards):
+            raise RuntimeError(f"Skywork PRM produced non-finite step rewards: {step_rewards}")
         reward = float(sum(step_rewards) / len(step_rewards))
         if not self._debug_printed:
             print(f"[skywork-prm] step_rewards={step_rewards}", flush=True)
@@ -467,6 +590,7 @@ def _build_grpo_config_kwargs(
         "learning_rate": args.learning_rate,
         "per_device_train_batch_size": args.per_device_train_batch_size,
         "gradient_accumulation_steps": args.gradient_accumulation_steps,
+        "gradient_checkpointing": args.gradient_checkpointing,
         "max_steps": args.max_steps,
         "num_generations": args.num_generations,
         "generation_batch_size": args.generation_batch_size,
@@ -480,8 +604,13 @@ def _build_grpo_config_kwargs(
         "seed": args.seed,
         "bf16": bf16,
         "report_to": [],
+        "logging_strategy": "steps",
         "logging_steps": 1,
-        "save_steps": max(args.max_steps, 1),
+        "logging_first_step": True,
+        "save_strategy": "steps",
+        "save_steps": _resolve_save_steps(args),
+        "save_total_limit": args.save_total_limit,
+        "save_only_model": args.save_only_model,
     }
     supported = set(inspect.signature(grpo_config_cls.__init__).parameters)
     return {key: value for key, value in candidate_kwargs.items() if key in supported}
@@ -493,6 +622,42 @@ def _resolve_clip_epsilons(args: argparse.Namespace) -> tuple[float, float]:
     epsilon_low = 0.2 if args.epsilon_low is None else float(args.epsilon_low)
     epsilon_high = 0.28 if args.epsilon_high is None else float(args.epsilon_high)
     return epsilon_low, epsilon_high
+
+
+def _resolve_save_steps(args: argparse.Namespace) -> int:
+    if args.save_steps is not None:
+        return max(1, int(args.save_steps))
+    return min(max(args.max_steps, 1), 50)
+
+
+def _parse_new_lora_target_modules(value: str) -> list[str]:
+    modules = [item.strip() for item in value.split(",") if item.strip()]
+    if not modules:
+        raise ValueError("--new-lora-target-modules must contain at least one module name.")
+    return modules
+
+
+def _make_clean_ref_callback(trainer_callback_cls):
+    class CleanRefCallback(trainer_callback_cls):
+        def on_save(self, args, state, control, **_kwargs):
+            removed = _delete_saved_ref_adapter_dirs(Path(args.output_dir))
+            if removed:
+                removed_text = ", ".join(str(path) for path in removed)
+                print(f"[disk-cleanup] deleted saved ref adapter dirs: {removed_text}", flush=True)
+            return control
+
+    return CleanRefCallback()
+
+
+def _delete_saved_ref_adapter_dirs(output_dir: Path) -> list[Path]:
+    candidates = sorted(output_dir.glob("checkpoint-*/ref"))
+    candidates.append(output_dir / "final" / "ref")
+    removed: list[Path] = []
+    for ref_dir in candidates:
+        if ref_dir.exists():
+            shutil.rmtree(ref_dir)
+            removed.append(ref_dir)
+    return removed
 
 
 def _select_tracked_lora_param_names(model, *, limit: int = 5) -> list[str]:
@@ -649,7 +814,9 @@ def _write_run_manifest(args: argparse.Namespace, config: RewardConfig, num_rows
         "prm_calibration": str(args.prm_calibration) if args.prm_calibration else None,
         "num_rows": num_rows,
         "reward": {
-            "version": "final_plus_prm_zscore_plus_optional_python_verifier_v1",
+            "version": "final_plus_prm_zscore_plus_optional_python_verifier_v2",
+            "mode": config.reward_mode,
+            "wrong_final_reward": config.wrong_final_reward,
             "final_weight": config.final_weight,
             "prm_weight": config.prm_weight,
             "prm_mean": config.prm_mean,
@@ -671,13 +838,27 @@ def _write_run_manifest(args: argparse.Namespace, config: RewardConfig, num_rows
             "max_prompt_length": args.max_prompt_length,
             "max_completion_length": args.max_completion_length,
             "learning_rate": args.learning_rate,
+            "gradient_checkpointing": args.gradient_checkpointing,
             "beta": args.beta,
             "loss_type": args.loss_type,
             "epsilon_low": epsilon_low,
             "epsilon_high": epsilon_high,
             "generation_batch_size": args.generation_batch_size,
+            "save_steps": _resolve_save_steps(args),
+            "save_total_limit": args.save_total_limit,
+            "save_only_model": args.save_only_model,
+            "delete_saved_ref_adapter": args.delete_saved_ref_adapter,
             "clip_mode": "clip_higher" if epsilon_high != epsilon_low else "symmetric",
             "seed": args.seed,
+            "merge_sft_adapter": args.merge_sft_adapter,
+            "new_lora": {
+                "r": args.new_lora_r,
+                "alpha": args.new_lora_alpha,
+                "dropout": args.new_lora_dropout,
+                "target_modules": _parse_new_lora_target_modules(args.new_lora_target_modules),
+            }
+            if args.merge_sft_adapter
+            else None,
         },
         "diagnostics": {
             "adapter_diagnostics_path": str(args.output_dir / "adapter_diagnostics.json"),

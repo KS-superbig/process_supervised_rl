@@ -26,6 +26,8 @@ logs/*
 experiments/*
 !experiments/.gitkeep
 checkpoints/
+artifacts/*.tar.gz
+!artifacts/*.tar.gz.sha256
 
 # IDE
 .idea/

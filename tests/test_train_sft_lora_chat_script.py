@@ -20,20 +20,29 @@ def test_train_sft_lora_chat_parser():
             "data/sft/train.jsonl",
             "--model-name",
             "models/base",
+            "--init-adapter",
+            "logs/sft/gsm8k/final",
             "--output-dir",
             "logs/sft/chat",
             "--max-length",
             "768",
             "--epochs",
             "1.5",
+            "--warmup-ratio",
+            "0.03",
+            "--lr-scheduler-type",
+            "cosine",
         ]
     )
 
     assert args.train_jsonl == Path("data/sft/train.jsonl")
     assert args.model_name == "models/base"
+    assert args.init_adapter == Path("logs/sft/gsm8k/final")
     assert args.output_dir == Path("logs/sft/chat")
     assert args.max_length == 768
     assert args.epochs == 1.5
+    assert args.warmup_ratio == 0.03
+    assert args.lr_scheduler_type == "cosine"
 
 
 def test_mask_user_tokens_keeps_only_assistant_labels():

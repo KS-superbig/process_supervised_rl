@@ -75,6 +75,10 @@ def test_train_grpo_smoke_parser_accepts_reward_and_generation_controls():
             "128",
             "--prm-weight",
             "0.35",
+            "--reward-mode",
+            "gated_prm",
+            "--wrong-final-reward",
+            "-0.1",
             "--prm-clip",
             "2.5",
             "--python-verifier-weight",
@@ -100,6 +104,22 @@ def test_train_grpo_smoke_parser_accepts_reward_and_generation_controls():
             "32",
             "--loss-type",
             "bnpo",
+            "--no-gradient-checkpointing",
+            "--merge-sft-adapter",
+            "--new-lora-r",
+            "512",
+            "--new-lora-alpha",
+            "1024",
+            "--new-lora-dropout",
+            "0.05",
+            "--new-lora-target-modules",
+            "q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj",
+            "--save-steps",
+            "250",
+            "--save-total-limit",
+            "1",
+            "--no-delete-saved-ref-adapter",
+            "--no-save-only-model",
         ]
     )
 
@@ -109,6 +129,8 @@ def test_train_grpo_smoke_parser_accepts_reward_and_generation_controls():
     assert args.max_prompt_length == 256
     assert args.max_completion_length == 128
     assert args.prm_weight == 0.35
+    assert args.reward_mode == "gated_prm"
+    assert args.wrong_final_reward == -0.1
     assert args.prm_clip == 2.5
     assert args.python_verifier_weight == 0.4
     assert args.python_verifier_alpha_step == 0.25
@@ -120,6 +142,16 @@ def test_train_grpo_smoke_parser_accepts_reward_and_generation_controls():
     assert args.max_num_gen_batches == 6
     assert args.generation_batch_size == 32
     assert args.loss_type == "bnpo"
+    assert args.gradient_checkpointing is False
+    assert args.merge_sft_adapter is True
+    assert args.new_lora_r == 512
+    assert args.new_lora_alpha == 1024
+    assert args.new_lora_dropout == 0.05
+    assert args.new_lora_target_modules == "q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj"
+    assert args.save_steps == 250
+    assert args.save_total_limit == 1
+    assert args.delete_saved_ref_adapter is False
+    assert args.save_only_model is False
     assert module._resolve_clip_epsilons(args) == (0.18, 0.31)
 
 
@@ -228,6 +260,24 @@ def test_completion_step_prefixes_builds_incremental_prefixes():
     assert prefixes == ["step one", "step one\nstep two"]
 
 
+def test_delete_saved_ref_adapter_dirs_removes_checkpoint_and_final_refs(tmp_path):
+    module = _load_script_module("train_grpo_smoke.py")
+    checkpoint_ref = tmp_path / "checkpoint-500" / "ref"
+    final_ref = tmp_path / "final" / "ref"
+    checkpoint_ref.mkdir(parents=True)
+    final_ref.mkdir(parents=True)
+    (checkpoint_ref / "adapter_model.safetensors").write_text("ref", encoding="utf-8")
+    (final_ref / "adapter_model.safetensors").write_text("ref", encoding="utf-8")
+    (tmp_path / "final" / "adapter_model.safetensors").write_text("policy", encoding="utf-8")
+
+    removed = module._delete_saved_ref_adapter_dirs(tmp_path)
+
+    assert removed == [checkpoint_ref, final_ref]
+    assert not checkpoint_ref.exists()
+    assert not final_ref.exists()
+    assert (tmp_path / "final" / "adapter_model.safetensors").exists()
+
+
 def test_prepare_skywork_input_marks_each_newline_step_reward():
     module = _load_script_module("train_grpo_smoke.py")
 
@@ -317,6 +367,53 @@ def test_grpo_config_kwargs_filters_unsupported_trl_parameters():
         "epsilon_high": 0.29,
         "generation_batch_size": 32,
         "reward_weights": [1.0, 0.0],
+    }
+
+
+def test_grpo_config_kwargs_uses_explicit_save_steps_when_supported():
+    module = _load_script_module("train_grpo_smoke.py")
+
+    class FakeGRPOConfig:
+        def __init__(
+            self,
+            output_dir=None,
+            max_steps=None,
+            save_strategy=None,
+            save_steps=None,
+            save_total_limit=None,
+            save_only_model=None,
+        ):
+            pass
+
+    parser = module.build_parser()
+    args = parser.parse_args(
+        [
+            "--model-name",
+            "/models/base",
+            "--sft-adapter",
+            "logs/sft/policy/final",
+            "--prm-dir",
+            "logs/prm_v2/best/trial_001",
+            "--output-dir",
+            "logs/rl/smoke",
+            "--max-steps",
+            "1000",
+            "--save-steps",
+            "250",
+            "--save-total-limit",
+            "2",
+        ]
+    )
+
+    kwargs = module._build_grpo_config_kwargs(FakeGRPOConfig, args, bf16=False)
+
+    assert kwargs == {
+        "output_dir": "logs/rl/smoke",
+        "max_steps": 1000,
+        "save_strategy": "steps",
+        "save_steps": 250,
+        "save_total_limit": 2,
+        "save_only_model": True,
     }
 
 

@@ -8,6 +8,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="LoRA SFT from chat-message JSONL with assistant-only loss.")
     parser.add_argument("--train-jsonl", type=Path, required=True)
     parser.add_argument("--model-name", type=str, required=True)
+    parser.add_argument(
+        "--init-adapter",
+        type=Path,
+        help="Optional existing LoRA adapter to continue training instead of initializing a fresh adapter.",
+    )
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--max-length", type=int, default=1024)
     parser.add_argument("--epochs", type=float, default=2.0)
@@ -15,6 +20,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--grad-accum", type=int, default=16)
     parser.add_argument("--eval-size", type=int, default=32)
+    parser.add_argument("--warmup-ratio", type=float, default=0.0)
+    parser.add_argument("--lr-scheduler-type", default="linear")
+    parser.add_argument("--logging-steps", type=int, default=10)
+    parser.add_argument("--eval-steps", type=int, default=50)
+    parser.add_argument("--save-steps", type=int, default=100)
     parser.add_argument("--seed", type=int, default=42)
     return parser
 
@@ -127,7 +137,7 @@ class AssistantOnlyCollator:
 def main() -> None:
     import torch
     from datasets import Dataset
-    from peft import LoraConfig, get_peft_model
+    from peft import LoraConfig, PeftModel, get_peft_model
     from transformers import AutoModelForCausalLM, AutoTokenizer, Trainer, TrainingArguments
 
     args = build_parser().parse_args()
@@ -150,15 +160,18 @@ def main() -> None:
     )
     model.config.use_cache = False
 
-    lora_cfg = LoraConfig(
-        r=16,
-        lora_alpha=32,
-        lora_dropout=0.05,
-        bias="none",
-        task_type="CAUSAL_LM",
-        target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
-    )
-    model = get_peft_model(model, lora_cfg)
+    if args.init_adapter is not None:
+        model = PeftModel.from_pretrained(model, str(args.init_adapter), is_trainable=True)
+    else:
+        lora_cfg = LoraConfig(
+            r=16,
+            lora_alpha=32,
+            lora_dropout=0.05,
+            bias="none",
+            task_type="CAUSAL_LM",
+            target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
+        )
+        model = get_peft_model(model, lora_cfg)
 
     def tokenize_row(row: dict) -> dict:
         return format_example(tokenizer, row["messages"], args.max_length)
@@ -174,10 +187,12 @@ def main() -> None:
         per_device_eval_batch_size=args.batch_size,
         gradient_accumulation_steps=args.grad_accum,
         eval_strategy="steps",
-        eval_steps=50,
-        save_steps=100,
+        eval_steps=args.eval_steps,
+        save_steps=args.save_steps,
         save_total_limit=2,
-        logging_steps=10,
+        logging_steps=args.logging_steps,
+        warmup_ratio=args.warmup_ratio,
+        lr_scheduler_type=args.lr_scheduler_type,
         bf16=torch.cuda.is_available(),
         fp16=False,
         report_to=[],
