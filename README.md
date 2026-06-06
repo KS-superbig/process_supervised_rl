@@ -1,6 +1,6 @@
 # MATH GRPO 消融实验任务书
 
-这个文档是当前给组员执行实验用的主 README。历史探索和弯路已经归档到 `docs/history/`，这里不再复述早期 GSM8K 旧 baseline 和旧消融。
+执行实验用的主 README。历史探索和弯路已经归档到 `docs/history/`，这里不再复述早期 GSM8K 旧 baseline 和旧消融。
 
 当前结论很明确：之前围绕旧 baseline 做的消融实验不再作为有效对比，因为那版 RL 基本没有拉开效果。现在统一以 step4 的新 baseline 为锚点，重新跑消融。
 
