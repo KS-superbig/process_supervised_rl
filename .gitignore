@@ -29,6 +29,45 @@ checkpoints/
 artifacts/*.tar.gz
 !artifacts/*.tar.gz.sha256
 
+# Personal report assets and generated result tables stay local.
+docs/report/
+docs/report/figures/*
+!docs/report/figures/.gitkeep
+docs/report/data/*
+!docs/report/data/.gitkeep
+docs/report/tables/*
+!docs/report/tables/.gitkeep
+docs/report/**/*.csv
+docs/report/**/*.json
+docs/report/**/*.jsonl
+docs/report/**/*.png
+docs/report/**/*.jpg
+docs/report/**/*.jpeg
+docs/report/**/*.pdf
+
+# Local agent planning notes for report drafting.
+docs/superpowers/plans/*report*
+docs/superpowers/specs/*report*
+
 # IDE
 .idea/
 .vscode/
+.localleaf/
+.leafignore
+
+# LaTeX build artifacts
+*.aux
+*.bbl
+*.bcf
+*.blg
+*.fdb_latexmk
+*.fls
+*.log
+*.out
+*.run.xml
+*.synctex.gz
+*.synctex(busy)
+*.toc
+*.lof
+*.lot
+*.xdv
