@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="620" viewBox="0 0 1200 620" role="img" aria-labelledby="title desc">
+  <title id="title">MATH500 exploratory training-strategy ablation</title>
+  <desc id="desc">Accuracy on the first 100 MATH500 examples is 39 percent for Clip-Higher GRPO, 39 percent for DAPO loss, and 49 percent for Dynamic-Sampling GRPO.</desc>
+  <rect width="1200" height="620" fill="#fbfaf7"/>
+  <text x="72" y="74" fill="#12263f" font-family="Arial, Helvetica, sans-serif" font-size="32" font-weight="700">MATH500: exploratory training-strategy ablation</text>
+  <text x="72" y="108" fill="#587086" font-family="Arial, Helvetica, sans-serif" font-size="18">DeepSeekMath-7B-Instruct + MATH L3/4 warmup · gated PRM reward (λ = 0.2) · seed 42</text>
+  <text x="72" y="152" fill="#334d63" font-family="Arial, Helvetica, sans-serif" font-size="16" font-weight="700">Accuracy (%) on MATH500 first 100 · greedy decoding · max 768 tokens</text>
+
+  <g stroke="#d8e0e7" stroke-width="1">
+    <line x1="138" y1="500" x2="1130" y2="500"/>
+    <line x1="138" y1="397" x2="1130" y2="397"/>
+    <line x1="138" y1="293" x2="1130" y2="293"/>
+    <line x1="138" y1="190" x2="1130" y2="190"/>
+  </g>
+  <g fill="#587086" font-family="Arial, Helvetica, sans-serif" font-size="15" text-anchor="end">
+    <text x="122" y="505">0</text>
+    <text x="122" y="402">20</text>
+    <text x="122" y="299">40</text>
+    <text x="122" y="196">60</text>
+  </g>
+  <line x1="138" y1="190" x2="138" y2="500" stroke="#92a4b4" stroke-width="1.5"/>
+
+  <rect x="250" y="299" width="180" height="201" rx="4" fill="#6f90a8"/>
+  <rect x="540" y="299" width="180" height="201" rx="4" fill="#4f7896"/>
+  <rect x="830" y="247" width="180" height="253" rx="4" fill="#d55a4d"/>
+
+  <g font-family="Arial, Helvetica, sans-serif" text-anchor="middle">
+    <text x="340" y="277" fill="#12263f" font-size="30" font-weight="700">39%</text>
+    <text x="630" y="277" fill="#12263f" font-size="30" font-weight="700">39%</text>
+    <text x="920" y="225" fill="#a63c34" font-size="30" font-weight="700">49%</text>
+    <text x="340" y="538" fill="#12263f" font-size="18" font-weight="700">Clip-Higher GRPO</text>
+    <text x="630" y="538" fill="#12263f" font-size="18" font-weight="700">DAPO loss</text>
+    <text x="920" y="538" fill="#12263f" font-size="18" font-weight="700">Dynamic-Sampling GRPO</text>
+    <text x="340" y="563" fill="#587086" font-size="15">ε_high = 0.28</text>
+    <text x="630" y="563" fill="#587086" font-size="15">loss_type = dapo</text>
+    <text x="920" y="563" fill="#587086" font-size="15">G = 4 · dynamic sampling</text>
+  </g>
+
+  <text x="72" y="602" fill="#587086" font-family="Arial, Helvetica, sans-serif" font-size="14">Exploratory, single-seed comparison. This changes training strategy—not the reward type—and is not a final-only vs. process-reward causal ablation.</text>
+</svg>

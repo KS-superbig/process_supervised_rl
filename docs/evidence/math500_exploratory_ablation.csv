@@ -1,0 +1,4 @@
+run_id,training_variant,reward_mode,num_generations,dynamic_sampling,loss_type,clip_bounds,seed,max_steps,eval_dataset,eval_subset,decode,max_gen_toks,num_correct,num_examples,accuracy,source_artifact
+exp2_clip_higher,Clip-Higher GRPO,gated_prm,4,false,grpo,0.20/0.28,42,1000,HuggingFaceH4/MATH-500,first 100,greedy,768,39,100,0.39,exp2_clip_higher_result_1(1).zip + eval_results.json
+exp3_dapo_loss,DAPO loss,gated_prm,4,false,dapo,0.20/0.20,42,1000,HuggingFaceH4/MATH-500,first 100,greedy,768,39,100,0.39,exp3_dapo_loss_result.tgz + eval_results(1).json
+exp4_dynamic_sampling,Dynamic-Sampling GRPO,gated_prm,4,true,grpo,0.20/0.20,42,1000,HuggingFaceH4/MATH-500,first 100,greedy,768,49,100,0.49,exp4_dynamic_sampling_1000_results.tar.gz

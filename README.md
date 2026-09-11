@@ -1,123 +1,110 @@
-# 数学推理过程监督强化学习
+# Process-Supervised RL for Mathematical Reasoning
 
-这个仓库归档了一个围绕“数学推理过程监督”的研究工程项目。项目从 GSM8K 上的规则版过程奖励原型开始，随后尝试了 LLM judge 偏好标注、轻量 PRM 诊断、SFT warmup，最后收敛到 MATH Level 3/4 数据上的 gated PRM GRPO 路线。
+> 用可验证的最终答案约束数学推理 RL，并以过程奖励区分正确解答中的推理质量。
 
-这个仓库按公开展示和长期归档的方式整理：代码、测试、配置和精简实验记录保留在 Git 中；原始/处理后数据、完整训练日志、checkpoint 和 LoRA adapter 不直接提交到仓库。
+本项目关注长链数学推理中的两个问题：最终奖励过于稀疏，以及过程奖励可能诱发 reward hacking。工程从 GSM8K 规则奖励原型出发，逐步扩展到 LLM judge、PRM、SFT warmup 和 gated PRM-GRPO。
 
-## 项目概述
+![过程监督 RL 的目标与问题定义](docs/target.png)
 
-最终有效的训练链路是：
+## 方法
 
-```text
-deepseek-math-7b-instruct
-  + SFT v3 / MATH L3-4 warmup adapter
-  -> 将 warmup adapter merge 到模型权重
-  + fresh r512 LoRA adapter
-  -> 使用 Skywork PRM gated reward 做 GRPO
-```
+最终答案是硬约束；过程奖励只用于排序答对的候选：
 
-核心设计是把最终答案正确性作为硬门控：
-
-```text
+```python
 if final_answer_correct:
     reward = 1.0 + 0.2 * process_reward
 else:
     reward = 0.0
 ```
 
-这样可以避免“答案错了但过程看起来不错”的样本获得正奖励。对于数学推理任务，过程奖励主要用于区分答对样本中的推理质量，而不是替代最终答案验证。
+这样，模型不能通过冗长或表面合理的过程为错误答案获取正反馈。
 
-## 仓库内容
-
-```text
-configs/       实验和 reward 配置示例
-scripts/       数据处理、候选生成、LLM judge、PRM、SFT、GRPO 和评测脚本
-src/psrl/      项目核心代码
-tests/         数据、reward、PRM、训练入口等单元测试
-docs/history/ 项目各阶段历史记录
-docs/repro/   当前复现说明和 Git 归档策略
-artifacts/    外部 adapter 的 checksum
+```mermaid
+flowchart LR
+    A[问题] --> B[生成多条推理]
+    B --> C[最终答案验证]
+    B --> D[过程奖励 / PRM]
+    C --> E{答案正确？}
+    E -- 否 --> F[0]
+    E -- 是 --> G[1 + λ × PRM]
+    D --> G
+    F --> H[GRPO]
+    G --> H
 ```
 
-历史文档记录了项目路线的变化和关键判断：
+## 已完成工作
 
-- [step1: 工程底座与规则 reward 原型](docs/history/README_process_supervised_rl_step1.md)
-- [step2: 规则版过程 reward 与 reranking 实验](docs/history/README_process_supervised_rl_step2.md)
-- [step3: LLM judge、PRM、SFT 和早期 GRPO 诊断](docs/history/README_process_supervised_rl_step3.md)
-- [step4: MATH warmup 与 r512 gated PRM GRPO](docs/history/README_process_supervised_rl_step4.md)
+- **数据管线**：GSM8K 规范化、最终答案抽取、推理步骤切分与 debug subset 构造。
+- **奖励建模**：final reward、规则过程 reward、anti-hacking penalty、候选 reranking 与 Python verifier。
+- **过程监督数据闭环**：多候选生成、LLM judge、preference 数据构造、轻量 PRM 训练与诊断。
+- **训练路径**：LoRA SFT、Skywork PRM 接入、warmup adapter merge、fresh LoRA gated GRPO。
+- **工程质量**：数据、reward、PRM、训练入口和 CLI 均有单元测试；大模型资产与完整数据不提交 Git。
 
-## 主要结果
-
-目前最值得保留的正向信号来自 step4 的 MATH 路线。
-
-MATH500 前 40 题 quick check：
-
-| 模型链路 | 准确率 |
-| --- | ---: |
-| SFT warmup | 16/40 = 40% |
-| SFT warmup + r512 gated GRPO | 22/40 = 55% |
-
-这个结果只能作为方向性 quick check，不作为完整 benchmark 结论。正式评测应使用 MATH500 first 100 或 full 500，`max_gen_toks=768`，并且必须复现训练时的加载链路：
+当前主线：
 
 ```text
-base + warmup SFT adapter merge + r512 GRPO adapter
+deepseek-math-7b-instruct
+  + MATH Level 3/4 SFT warmup
+  -> merge warmup adapter
+  + fresh r512 LoRA
+  -> gated PRM-GRPO
 ```
 
-如果只加载 `base + r512 GRPO adapter`，会漏掉 warmup SFT adapter 的能力，评测对象是错误的。
+## 探索性结果
 
-## 复现说明
+![MATH500 exploratory training-strategy ablation](docs/figures/math500_exploratory_ablation.svg)
 
-短版复现流程见 [docs/repro/current_pipeline.md](docs/repro/current_pipeline.md)。
+三组均使用相同的模型、MATH L3/4 warmup、gated PRM reward、MATH500 first-100、greedy decoding 和 seed 42；Dynamic Sampling GRPO 的准确率为 49/100。完整指标与来源见 [结果表](docs/evidence/math500_exploratory_ablation.csv)。
 
-最终 MATH GRPO 路线依赖的主要资产如下：
+这是 single-seed 的训练策略探索，**不是正式 benchmark，也不能证明过程奖励单独带来提升**：目前尚未归档同设定的 `final-only GRPO` 控制组。
 
-| 资产 | 训练时默认位置 |
-| --- | --- |
-| Base model | `/root/autodl-tmp/models/deepseek-math-7b-instruct` |
-| Warmup SFT adapter | `/root/autodl-tmp/psrl_outputs/sft_v3_math_l34_3000_e0p4_lr1e5_len2048/final` |
-| Skywork PRM | `/root/autodl-tmp/models/Skywork-o1-Open-PRM-Qwen-2.5-1.5B` |
-| MATH L3/4 训练数据 | `data/processed/math_l34_train_3000_seed42.jsonl` |
+训练日志也保留了 Dynamic-Sampling run 的 loss、reward 和最终正确率；由于其在 step 500 后以 weights-only 方式恢复，图中将两段训练分开呈现。
 
-warmup adapter 的 checksum 保存在：
+![Dynamic-Sampling GRPO training dynamics](docs/figures/exp4_dynamic_sampling_training_dynamics.svg)
 
-```text
-artifacts/sft_v3_math_l34_3000_e0p4_lr1e5_len2048.tar.gz.sha256
-```
+早期 GSM8K reranking 诊断则覆盖 100 题、400 条候选：final-only 与 final + process 的 top-1 准确率均为 93%，后者改变了 50 个选择且没有 `1→0` 退化；同时发现过程分与步骤数存在较强负相关，因而没有直接将其当作训练结论。[查看原始报告](docs/evidence/gsm8k_reranking_100_report.md)
 
-大体积 adapter 不提交到 Git。如果需要共享权重，建议通过 GitHub Release、Hugging Face model repo、网盘或其他外部 artifact 渠道发布，并在仓库中保留 checksum 用于校验。
-
-## Git 归档策略
-
-建议保留在 Git 中：
-
-```text
-configs/
-scripts/
-src/
-tests/
-docs/
-小型 Markdown 结果摘要
-adapter checksum
-```
-
-不建议保留在 Git 中：
-
-```text
-原始或处理后数据集
-候选轨迹 JSONL
-benchmark prediction JSONL
-完整 reward-debug 日志
-模型 checkpoint
-LoRA adapter 二进制文件
-远端机器专用输出或私密信息
-```
-
-## 工程说明
-
-项目包含数据标准化、reward 聚合、候选选择、PRM 数据构造、PRM 训练和 GRPO reward 行为等测试。发布前建议运行：
+## 快速开始
 
 ```bash
+# 轻量工程验证
 pytest -q
+
+# 准备 GSM8K
+python scripts/prepare_gsm8k.py \
+  --input data/raw/train.jsonl \
+  --output data/processed/gsm8k_train.jsonl \
+  --split train
+
+# 准备 MATH L3/4 训练子集
+python scripts/prepare_math_l34.py \
+  --output data/processed/math_l34_train_3000_seed42.jsonl \
+  --limit 3000 \
+  --seed 42
 ```
 
-其中大部分是轻量单元测试；完整模型训练和 MATH500 评测需要外部模型权重和 GPU 环境。
+完整 SFT、PRM、GRPO 命令与模型加载要求见 [复现流程](docs/repro/current_pipeline.md)。评测 GRPO 时必须加载：
+
+```text
+base + merged warmup SFT adapter + r512 GRPO adapter
+```
+
+## 项目结构
+
+```text
+src/psrl/     data、reward、PRM、GRPO 与评测核心逻辑
+scripts/      数据准备、候选生成、judge、PRM、SFT、GRPO、benchmark 入口
+configs/      数据、reward、训练与评测配置
+tests/        单元测试与 CLI smoke tests
+docs/         设计、阶段记录与复现说明
+```
+
+更多背景与实验决策：
+[设计文档](docs/superpowers/specs/2026-04-19-process-supervised-rl-design.md) ·
+[阶段记录](docs/history/README_process_supervised_rl_step4.md) ·
+[复现流程](docs/repro/current_pipeline.md)
+
+## Next
+
+- 完成 final-only GRPO vs. gated PRM-GRPO 的同设定、多 seed 对照；
+- 在 MATH500 full 上评测，并归档曲线、逐题预测和可复用结果表。

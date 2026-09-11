@@ -28,6 +28,7 @@ experiments/*
 checkpoints/
 artifacts/*.tar.gz
 !artifacts/*.tar.gz.sha256
+artifacts/local/
 
 # Personal report assets and generated result tables stay local.
 docs/report/
