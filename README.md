@@ -17,26 +17,11 @@ else:
     reward = 0.0
 ```
 
-这样，模型不能通过冗长或表面合理的过程为错误答案获取正反馈。
-
-```mermaid
-flowchart LR
-    A[问题] --> B[生成多条推理]
-    B --> C[最终答案验证]
-    B --> D[过程奖励 / PRM]
-    C --> E{答案正确？}
-    E -- 否 --> F[0]
-    E -- 是 --> G[1 + λ × PRM]
-    D --> G
-    F --> H[GRPO]
-    G --> H
-```
-
 ## 已完成工作
 
 - **数据管线**：GSM8K 规范化、最终答案抽取、推理步骤切分与 debug subset 构造。
 - **奖励建模**：final reward、规则过程 reward、anti-hacking penalty、候选 reranking 与 Python verifier。
-- **过程监督数据闭环**：多候选生成、LLM judge、preference 数据构造、轻量 PRM 训练与诊断。
+- **过程监督数据**：多候选生成、LLM judge、preference 数据构造、轻量 PRM 训练与诊断。
 - **训练路径**：LoRA SFT、Skywork PRM 接入、warmup adapter merge、fresh LoRA gated GRPO。
 - **工程质量**：数据、reward、PRM、训练入口和 CLI 均有单元测试；大模型资产与完整数据不提交 Git。
 
@@ -50,21 +35,52 @@ deepseek-math-7b-instruct
   -> gated PRM-GRPO
 ```
 
-## 路线演进：为什么不是直接训练一个 PRM
+## 路线演进
 
-这不是一条预先设定好的直线流程，而是由每轮诊断结果推动的迭代。
 
-| 阶段 | 实际做法 | 发现的问题 | 因此做出的决策 |
-| --- | --- | --- | --- |
-| 1. 规则原型 | 在 GSM8K 上按换行切分 reasoning，设计 validity / consistency / progress / anti-hacking 规则 reward | 规则可运行，但“按行”不等于语义上独立的推理步骤 | 将规则 reward 限定为 baseline 与 sanity check，不把它包装成 learned PRM |
-| 2. 候选 reranking | 对 100 题各生成 4 条候选，比较 final-only 与 final + process | 准确率同为 93%，但过程分与步骤数强负相关（`-0.8478`），有明显短答案偏好 | 继续诊断 reward，不直接用规则分进入 RL |
-| 3. LLM judge → 本地偏好模型 | 强 LLM 对同题候选整体排序，生成 324 个 chosen/rejected pairs；训练轻量词袋 preference model | 这是 **trajectory-level / candidate-level** 偏好代理：judge 对整条轨迹判一次，最终压缩为候选级偏好，不能提供可靠的逐 step credit | 不把该模型称为严格 step-level PRM；它只验证数据闭环与 reranking 可行性 |
-| 4. 轻量 PRM 诊断 | 轻量模型训练集 pair accuracy 达 0.9722，但与原始 judge 的一致率约 0.71，仍低于 final-only 的 0.74 | 小规模、词袋式偏好模型并没有稳定复现 judge 的过程判断，继续调参收益有限 | 停止投入到“把简化代理调成 PRM”，改为直接接入预训练 Skywork PRM |
-| 5. 预训练 PRM + GRPO | 用 Skywork 的 Qwen reward head 取得 step rewards，在 MATH L3/4 warmup 后进行 gated GRPO | 早期 additive reward 会让错误答案因过程分获得正奖励；小 rank / 200-step 训练也太弱 | 改为 final-correctness gate、fresh r512 LoRA、1000-step 配置，并引入 dynamic sampling |
+** 1. 用规则代替reward model打分第一版，具体有下面四个标准
 
-这里的术语边界很重要：早期本地“PRM”并不是严格的过程奖励模型。它没有对每个语义推理步骤提供独立、可靠的标签；实际信号来自 LLM judge 对**整条候选轨迹**的相对排序，再被压缩成一个候选级偏好或总体分数。这个退化代理适合验证工程闭环，却不足以承担细粒度 credit assignment。
+$$
+\hat R_{\mathrm{rule}}=\operatorname{norm}\!\left(\frac{1}{T}\sum_t
+  [r_{\mathrm{valid}}+r_{\mathrm{consistent}}+r_{\mathrm{progress}}-0.5r_{\mathrm{hack}}]\right).
+$$
 
-后续接入 Skywork PRM 的原因正是如此：它提供真正的 token / step reward 序列。即便如此，数学题的最终答案仍由 verifier 硬门控；PRM 只负责在正确候选内部提供过程质量信号。
+其中 `validity` 看数字和运算，`consistency` 查变量赋值冲突，`progress` 看是否引入新的数值/推导，`anti-hacking` 查重复、空泛 filler、提示词或代码污染。
+
+问题：第一，换行只是文本格式：一行可能把两步推理也可能两行是一步推理过程，所以它不是可标注的语义步骤。第二，步骤和步骤之间有关系 ，规则会奖励它容易数到的表面特征，而非真正的推理质量。
+
+我没有凭直觉继续调权重，而是在 100 题 × 4 候选的同一批轨迹上做 reranking。`final-only` 与 `final + rule-process` 的 top-1 都是 **93%**，但出现了
+
+$$
+\operatorname{corr}(\texttt{num\_steps},\ \texttt{process\_reward})=-0.8478.
+$$
+
+也就是说，过程分与推理长度强烈负相关，明显偏爱短轨迹；50/100 道题虽换了选择，却没有带来准确率增益。个人认为很可能是长回答后续步骤引入新数值少得分低
+
+**2. 考虑到推理链条其实有很强的上下文联系关系先让 LLM 从全局视角评一次，类LLM judge。** 改为将同一题的 4 条完整候选连同题目和参考答案交给强 LLM judge。它一次看到整条推理，能比较跳步、前后矛盾、无关展开和最终结论之间的关系；每题输出候选排序**324 个** `chosen/rejected` preference pairs。
+目的是用这些偏好数据训练一个打分的小模型，==但是后续实验很不理想很明显==，第一数据量太小
+
+实际诊断也验证了这一点：轻量模型在这 324 个训练 pair 上的 accuracy 达到 **0.9722**，但在候选选择评估中，它与原始 LLM judge 选中结果的一致率只有约 **0.71**。具体地说，同一道题的 4 条完整 CoT 都会被小模型各自打一个**轨迹总分**，模型选最高分的那条；约 71% 的题目中，这一选择与 judge 的 top-1 相同。它不是最终答案准确率，更不是逐 step 打分准确率。
+
+`final-only` 的 judge 一致率不在这里作为过程质量基线比较：它只按最终答案选择候选，而 judge 也会重视最终正确性，两者衡量的能力不同。原因不只是数量小：这些 pair 只来自 100 道题的候选排序，覆盖的错误类型有限；更关键的是，每个标签评价的是整条 CoT 的相对好坏，无法告诉模型“具体哪一步错了、该扣多少分”。因此小模型很容易拟合训练样本中的长度、措辞等表面模式，却难以稳定复现 judge 的全局判断。
+
+所以后续没有继续用这几百条数据从零训练或硬调这个小模型，而是直接接入已经在大规模过程监督数据上预训练的 Skywork PRM，把有限的实验资源用在验证最终答案门控、reward 设计和 GRPO 训练策略上。
+
+**3. 用外部 judge 而不是训练集分数检验这个退化代理。** 轻量模型在 324 个训练 pair 上达到 **0.9722** accuracy，看起来很好；但在候选选择评估中，与原 LLM judge 的 top-1 一致率只有约 **0.71**。这说明训练集拟合高，并不等于能稳定复现 judge 对完整推理轨迹的偏好。训练集拟合与外部对齐之间存在落差，继续把它硬调成“PRM”的证据不够；它完成了验证数据闭环的任务，但不承担细粒度 credit assignment。
+
+**4. 接入预训练 Skywork PRM（1.5B），但仍只评整条 CoT。** 为避免用 324 个 pair 从零训练过程模型，后续改用预训练的 Skywork PRM。当前用法是把“题目 + 完整 CoT”整体输入模型，得到一个 `raw_prm_score`；GRPO 对每条轨迹只接收这一个标量过程分。不做语义步骤切分，也不对单独某一步打分或更新。随后在 MATH L3/4 warmup 后进行 GRPO。
+
+训练中还发现：若直接使用 $R=R_{\mathrm{final}}+\lambda R_{\mathrm{process}}$，错误答案仍可能凭借“看起来像好过程”得到正奖励，这会把 reward hacking 带回训练。因此最终采用
+
+$$
+R(x,y)=
+\begin{cases}
+1+0.2\,R_{\mathrm{PRM}}(x,y), & \text{final answer correct},\\
+0, & \text{otherwise}.
+\end{cases}
+$$
+
+并使用 fresh r512 LoRA、1000-step 配置与 dynamic sampling。最终答案是不可绕过的验证门；PRM 只在答对的候选之间分配过程 credit。这是当前项目对“既要过程监督、又要抑制 reward hacking”的实际折中，而不是声称已经解决了严格逐步标注的问题。
 
 相关阶段记录：[step1：工程与规则原型](docs/history/README_process_supervised_rl_step1.md) · [step2：reranking 与规则偏差](docs/history/README_process_supervised_rl_step2.md) · [step3：LLM judge 与轻量偏好模型](docs/history/README_process_supervised_rl_step3.md) · [step4：Skywork PRM 与 gated GRPO](docs/history/README_process_supervised_rl_step4.md)
 
