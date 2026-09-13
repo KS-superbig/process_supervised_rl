@@ -19,7 +19,7 @@
 **1. 用规则代替 reward model 打分第一版，具体有下面四个标准。**
 
 $$
-\hat R_{\mathrm{rule}}=\operatorname{norm}\!\left(\frac{1}{T}\sum_t
+\hat R_{\mathrm{rule}}=\mathrm{norm}\!\left(\frac{1}{T}\sum_t
   [r_{\mathrm{valid}}+r_{\mathrm{consistent}}+r_{\mathrm{progress}}-0.5r_{\mathrm{hack}}]\right).
 $$
 
@@ -30,7 +30,7 @@ $$
 在 100 题 × 4 候选的同一批轨迹上做 reranking。`final-only` 与 `final + rule-process` 的 top-1 都是 **93%**，但出现了
 
 $$
-\operatorname{corr}(\texttt{num\_steps},\ \texttt{process\_reward})=-0.8478.
+\mathrm{corr}(\mathrm{num\_steps},\ \mathrm{process\_reward})=-0.8478.
 $$
 
 也就是说，过程分与推理长度强烈负相关，明显偏爱短轨迹；50/100 道题虽换了选择，却没有带来准确率增益。个人认为很可能是规则设置问题，例如长步骤在后续的新变量出现次数少。
