@@ -54,8 +54,6 @@ $$
 
 三组均使用相同的模型、MATH L3/4 warmup、gated PRM reward、MATH500 first-100、greedy decoding 和 seed 42；Dynamic Sampling GRPO 的准确率为 49/100。完整指标与来源见 [结果表](docs/evidence/math500_exploratory_ablation.csv)。
 
-这是 single-seed 的训练策略探索，：目前尚未归档同设定的 `final-only GRPO` 控制组。
-
 训练日志也保留了 Dynamic-Sampling run 的 loss、reward 和最终正确率；由于其在 step 500 后以 weights-only 方式恢复，图中将两段训练分开呈现。
 
 ![Dynamic-Sampling GRPO training dynamics](docs/figures/exp4_dynamic_sampling_training_dynamics.svg)
