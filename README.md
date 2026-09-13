@@ -47,9 +47,7 @@ $$
 
 训练阶段没有只跑一种 GRPO 配置，而是参考 DAPO 等工作中关于 clipping、loss 与采样的思路，在固定模型、warmup、reward 和评测设置下做了三组训练策略探索：Clip-Higher GRPO、DAPO loss、以及 Dynamic Sampling GRPO。MATH500 前 100 题的单 seed quick check 分别为 `39% / 39% / 49%`；它们用于判断哪种训练策略值得继续，而不是宣称复现了 DAPO/GSPO，或证明过程奖励本身带来因果提升。
 
-这里最大的工程教训来自低 rank 的 RL pilot：早期 GSM8K 实验使用 small-rank LoRA、约 200 steps，最终没有观察到明确的 RL 增益。低 rank 会把策略更新限制在很小的参数子空间；在 GRPO 中，单次更新本来就受采样噪声和 reward 方差影响，更新空间过窄时，策略可能改变得不足以反映到新采样的答案上。
-
-不过这不是“低 rank 一定无效”的单变量结论——旧实验同时也只训练了约 200 steps，训练时长与 adapter 容量混在一起。它能支持的工程判断是：不能仅凭一个 low-rank、短步数 run 就否定 RL。于是将 SFT adapter merge 到基座，再挂 fresh `r=512`、`alpha=1024` 的 RL LoRA，并将训练拉到 1000 steps；轻量 LoRA 仍用于 SFT warmup 的格式、风格和领域冷启动。这个取舍针对本项目的实验条件，而非普遍定律。
+这里最大的教训是：轻量 LoRA 很适合 SFT warmup，因为 SFT 主要做格式、风格和领域冷启动；但 GRPO 需要在采样噪声和 reward 信号下真正改变策略。早期 small-rank、约 200-step 的 RL 只能算 smoke test，容量和训练强度都不足。因此先将 SFT adapter merge 到基座，再挂 fresh `r=512`、`alpha=1024` 的 RL LoRA，并将训练拉到 1000 steps；步数太少也会削弱 RL 更新的效果。
 
 最终答案仍是不可绕过的验证门；过程总分只在答对候选之间影响 reward。这是当前项目对“既要利用过程信号、又要抑制 reward hacking”的实际折中，而不是声称已经解决严格的逐步标注问题。
 
